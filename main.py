@@ -12,17 +12,17 @@ data_path = Path.home() / "Dropbox/workspace/data/bu.txt"
 data = np.loadtxt(data_path, comments="#")
 
 # ================================
-# %% Sampling arguments
+# %% Sampling arguments preset
 # ++++++++++++++++++++++++++++++++
 
-n_chains = 50
-n_iterations = 100000
-burnin_iterations = 10000 
-save_every = 100
+n_chains = 20
+n_iterations = 1000000
+burnin_iterations = 200000
+save_every = 1000
 verbose = False
 
 # ================================
-# %% Parameter preset
+# %% Parameters preset
 # ++++++++++++++++++++++++++++++++
 
 trans_param_names = ["t0", "f0", "tau", "s"]
@@ -95,9 +95,11 @@ state = parameterization.initialize()
 # %% Modeling
 # ++++++++++++++++++++++++++++++++
 
-def model_func(t, t0, F0, tau, s):
+def model_func(t, t0, f0, tau, s):
     x = (t - t0) / tau
-    return 2 * F0 / (np.exp(-x) + np.exp(x/s) + 1e-8)
+    rising_term = np.exp(np.clip(-x, -100, 100))  # Clipping prevents overflow.
+    decaying_term = np.exp(np.clip(x/s, -100, 100))
+    return 2 * f0 / (rising_term + decaying_term + 1e-8)
 
 
 def fwd_func(state):
@@ -105,10 +107,10 @@ def fwd_func(state):
     f0_arr = state["trans_space"]["f0"][..., np.newaxis]
     tau_arr = state["trans_space"]["tau"][..., np.newaxis]
     s_arr = state["trans_space"]["s"][..., np.newaxis]
-    fqs = state["fixed_space"]["fqs"][..., np.newaxis]
+    fqs = state["fixed_space"]["fqs"]
     
     model_vals = model_func(data[:, 0], t0_arr, f0_arr, tau_arr, s_arr)
-    fwd_vals = np.sum(np.sum(model_vals, axis=0) + fqs)
+    fwd_vals = np.sum(model_vals, axis=0) + fqs
         
     return fwd_vals
 
@@ -137,3 +139,16 @@ samples = inversion.run(
 for chain in inversion.chains:
     chain.print_statistics()
 results = inversion.get_results(concatenate_chains=True)
+
+# ================================
+# %% Posterior distributions
+# ++++++++++++++++++++++++++++++++
+
+n_dim_array = results["trans_space.n_dimensions"]
+
+for n in np.unique(n_dim_array):
+    idxs = (n_dim_array == n)
+    for t in trans_names:
+        results[f"trans_space.{t}"]
+        
+    for f in fixed_names:
