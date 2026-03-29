@@ -9,10 +9,10 @@ import pandas as pd
 # %% Data
 # ++++++++++++++++++++++++++++++++
 
-data_path = Path.home() / "Dropbox/Material/Coauthor/_backup/Kang S. et al., 2026/analysis/bu.txt"
+data_path = Path.home() / "Dropbox/Material/Coauthor/_backup/Kang S. et al., 2026/analysis/ovro.txt"
 data = np.loadtxt(data_path, comments="#")
 
-save_dir = Path.home() / "Dropbox/Material/Coauthor/_backup/Kang S. et al., 2026/analysis/bu/5"
+save_dir = Path.home() / "Dropbox/Material/Coauthor/_backup/Kang S. et al., 2026/analysis/ovro/1"
 save_dir.mkdir(parents=True, exist_ok=True)
 
 # ================================
@@ -21,16 +21,16 @@ save_dir.mkdir(parents=True, exist_ok=True)
 
 # The limit number of model components
 n_dim_min = 1
-n_dim_max = 25
+n_dim_max = 50
 
 # The final number of posterior samples is
 # (The number of T=1 chains) * (n_iterations - brunin_iterations) / save_every.
-n_chains = 32
-n_iterations = 300000
-burnin_iterations = 200000
-save_every = 100
+n_chains = 100
+n_iterations = 2000000
+burnin_iterations = 1500000
+save_every = 200
 verbose = True
-print_every = 10000
+print_every = 100000
 
 # ================================
 # %% Parameters preset
@@ -156,7 +156,7 @@ inversion = bb.BayesianInversion(
 )
 
 inversion.run(
-    sampler=bb.samplers.ParallelTempering(),
+    sampler=bb.samplers.SimulatedAnnealing(),
     n_iterations=n_iterations,
     burnin_iterations=burnin_iterations,
     save_every=save_every,
@@ -301,12 +301,12 @@ for dim in np.unique(n_dims):
     ax.fill_between(data[:, 0], lower, upper, color="red", alpha=0.3, label=r"$1\sigma$ CI")
     model_val = model_func(
         plot_data,
-        *[est_results["estimates"][dim][tn][0][..., np.newaxis] for t, tn in enumerate(trans_param_names)],
+        *[est_results["estimates"][dim][tn][2][..., np.newaxis] for t, tn in enumerate(trans_param_names)],
     ) + est_results["estimates"]["fqs"][0]
     ax.plot(plot_data, model_val.T, lw=0.5, color="orange")
     ax.legend()
     ax.set_xlabel("MJD")
     ax.set_ylabel("Flux density [Jy]")
     ax.set_title(f"Data and model plot (dim={dim})")
-    fig.savefig(save_dir / f"model_{dim}.png")
+    #fig.savefig(save_dir / f"model_{dim}.png")
     
