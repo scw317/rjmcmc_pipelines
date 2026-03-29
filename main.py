@@ -3,27 +3,40 @@ from pathlib import Path
 import bayesbay as bb
 import matplotlib.pyplot as plt
 import numpy as np
+import pandas as pd
 
 # ================================
-# %% Import data
+# %% Data
 # ++++++++++++++++++++++++++++++++
 
-data_path = Path.home() / "Dropbox/workspace/data/bu.txt"
+data_path = Path.home() / "Dropbox/Material/Coauthor/_backup/Kang S. et al., 2026/analysis/bu.txt"
 data = np.loadtxt(data_path, comments="#")
+
+save_dir = Path.home() / "Dropbox/Material/Coauthor/_backup/Kang S. et al., 2026/analysis/bu/5"
+save_dir.mkdir(parents=True, exist_ok=True)
 
 # ================================
 # %% Sampling arguments preset
 # ++++++++++++++++++++++++++++++++
 
-n_chains = 20
-n_iterations = 1000000
+# The limit number of model components
+n_dim_min = 1
+n_dim_max = 25
+
+# The final number of posterior samples is
+# (The number of T=1 chains) * (n_iterations - brunin_iterations) / save_every.
+n_chains = 32
+n_iterations = 300000
 burnin_iterations = 200000
-save_every = 1000
-verbose = False
+save_every = 100
+verbose = True
+print_every = 10000
 
 # ================================
 # %% Parameters preset
 # ++++++++++++++++++++++++++++++++
+
+sort_ref = "t0"
 
 trans_param_names = ["t0", "f0", "tau", "s"]
 fixed_param_names = ["fqs"]
@@ -77,8 +90,8 @@ for name, lim in zip(fixed_param_names, fixed_param_limits):
 trans_space = bb.parameterization.ParameterSpace(
     name="trans_space",
     n_dimensions=None,
-    n_dimensions_min=1,
-    n_dimensions_max=int((len(data) - len(fixed_priors) - 1)/len(trans_priors)),
+    n_dimensions_min=n_dim_min,
+    n_dimensions_max=n_dim_max,
     parameters=trans_priors,
 )
 
@@ -88,8 +101,8 @@ fixed_space = bb.parameterization.ParameterSpace(
     parameters=fixed_priors,
 )
 
-parameterization=bb.parameterization.Parameterization([trans_space, fixed_space])
-state = parameterization.initialize()
+parameterization = bb.parameterization.Parameterization([trans_space, fixed_space])
+parameterization.initialize()
 
 # ================================
 # %% Modeling
@@ -99,7 +112,7 @@ def model_func(t, t0, f0, tau, s):
     x = (t - t0) / tau
     rising_term = np.exp(np.clip(-x, -100, 100))  # Clipping prevents overflow.
     decaying_term = np.exp(np.clip(x/s, -100, 100))
-    return 2 * f0 / (rising_term + decaying_term + 1e-8)
+    return 2 * f0 / (rising_term + decaying_term + 1e-16)
 
 
 def fwd_func(state):
@@ -108,6 +121,9 @@ def fwd_func(state):
     tau_arr = state["trans_space"]["tau"][..., np.newaxis]
     s_arr = state["trans_space"]["s"][..., np.newaxis]
     fqs = state["fixed_space"]["fqs"]
+    
+    if t0_arr.size == 0:
+        return np.full(data[:, 0].shape, fqs)
     
     model_vals = model_func(data[:, 0], t0_arr, f0_arr, tau_arr, s_arr)
     fwd_vals = np.sum(model_vals, axis=0) + fqs
@@ -118,37 +134,179 @@ def fwd_func(state):
 # %% Likelihood
 # ++++++++++++++++++++++++++++++++
 
-target = bb.likelihood.Target("target", dobs=data[:, 1], covariance_mat_inv=1/data[:, 2]**2)
-log_likelihood = bb.likelihood.LogLikelihood(targets=target, fwd_functions=fwd_func)
+target = bb.likelihood.Target(
+    name="target",
+    dobs=data[:, 1],
+    covariance_mat_inv=1/data[:, 2]**2,
+)
+
+log_likelihood = bb.likelihood.LogLikelihood(
+    targets=[target],
+    fwd_functions=[fwd_func],
+    )
 
 # ================================
-# %% Posterior sampling
+# %% Sampling
 # ++++++++++++++++++++++++++++++++
 
 inversion = bb.BayesianInversion(
-    parameterization, log_likelihood, n_chains=n_chains
-    )
+    parameterization=parameterization,
+    log_likelihood=log_likelihood,
+    n_chains=n_chains,
+)
 
-samples = inversion.run(
+inversion.run(
+    sampler=bb.samplers.ParallelTempering(),
     n_iterations=n_iterations,
     burnin_iterations=burnin_iterations,
     save_every=save_every,
     verbose=verbose,
-    )
+    print_every=print_every,
+)
 
 for chain in inversion.chains:
     chain.print_statistics()
 results = inversion.get_results(concatenate_chains=True)
-
+    
 # ================================
-# %% Posterior distributions
+# %% Parameter estimation
 # ++++++++++++++++++++++++++++++++
 
-n_dim_array = results["trans_space.n_dimensions"]
+n_dims = np.array(results["trans_space.n_dimensions"])
+est_results = {"samples": {}, "estimates":{}}
 
-for n in np.unique(n_dim_array):
-    idxs = (n_dim_array == n)
-    for t in trans_names:
-        results[f"trans_space.{t}"]
-        
-    for f in fixed_names:
+# For trans parameters
+for dim in np.unique(n_dims):
+    dim = dim.item()  # This is unnescessary but it is just for GUI problem.
+    est_results["samples"][dim] = {}
+    idxs = np.where(n_dims == dim)[0]
+    # Collect posterior samples
+    for tn in trans_param_names:
+        samples = []
+        for i in idxs:
+            samples.append(results[f"trans_space.{tn}"][i])
+        samples = np.vstack(samples)
+        # Save sorting index
+        if tn == sort_ref:
+            sort_idx = np.argsort(samples, axis=1)
+        est_results["samples"][dim][tn] = samples
+    # Sort posterior samples
+    for tn in trans_param_names:
+        samples = est_results["samples"][dim][tn]
+        est_results["samples"][dim][tn] = np.take_along_axis(samples, sort_idx, axis=1)
+    # Estimate parameters
+    est_results["estimates"][dim] = {}
+    for tn in trans_param_names:
+        est_results["estimates"][dim][tn] = np.percentile(est_results["samples"][dim][tn], [50, 15.87, 84.13], axis=0)
+    
+    # For forward model values
+    fwd_vals = []
+    for i in idxs:
+        fwd_vals.append(results["target.dpred"][i])
+    fwd_vals = np.vstack(fwd_vals)
+    est_results["samples"][dim]["forward"] = fwd_vals
+    est_results["estimates"][dim]["forward"] = np.percentile(fwd_vals, [50, 15.87, 84.13], axis=0)
+
+# For fixed parameters
+for fn in fixed_param_names:
+    samples = []
+    for i in idxs:
+        samples.append(results[f"fixed_space.{fn}"][i].item())
+    est_results["samples"][fn] = np.array(samples)     
+    est_results["estimates"][fn] = np.percentile(est_results["samples"][fn], [50, 15.87, 84.13], axis=0)
+
+# ================================
+# %% Export to excel
+# ++++++++++++++++++++++++++++++++
+
+with pd.ExcelWriter(save_dir / "results.xlsx") as w:
+    # Dimension sheet
+    dim_df = pd.DataFrame(data=np.vstack(np.unique(n_dims, return_counts=True)).T, columns=["dim", "num"])
+    dim_df.to_excel(w, sheet_name="dim", index=False)
+    # Fixed parameter sheet
+    est_type_col_df = pd.DataFrame(data=["point", "lower", "upper"], columns=["est_type"])
+    param_col_df = pd.DataFrame(
+        data=np.hstack([est_results["estimates"][fn][..., np.newaxis] for fn in fixed_param_names]),
+        columns=fixed_param_names,
+    )
+    fixed_df = pd.concat((est_type_col_df, param_col_df), axis=1)
+    fixed_df.to_excel(w, sheet_name="fixed", index=False)
+    # Trans parameter sheet
+    trand_df_ls = []
+    for dim in np.unique(n_dims):
+        dim_col_df = pd.DataFrame(np.repeat(dim, dim * 3), columns=["dim"])
+        seq_col_df = pd.DataFrame(np.tile(np.arange(dim), 3), columns=["seq"])
+        est_type_col_df = pd.DataFrame(np.repeat(["point", "lower", "upper"], dim), columns=["est_type"])
+        param_col_df = pd.DataFrame(
+            data=np.hstack([np.hstack(est_results["estimates"][dim][tn])[..., np.newaxis] for tn in trans_param_names]),
+            columns=trans_param_names,
+        )
+        trans_df = pd.concat((dim_col_df, est_type_col_df, seq_col_df, param_col_df), axis=1)
+        trand_df_ls.append(trans_df)
+    all_trans_df = pd.concat(trand_df_ls, axis=0)
+    all_trans_df.to_excel(w, sheet_name="trans", index=False)
+
+# ================================
+# %% Plot dimension histogram
+# ++++++++++++++++++++++++++++++++
+
+fig, ax = plt.subplots(dpi=300)
+ax.hist(n_dims, bins=np.arange(n_dims.min(), n_dims.max() + 2) - 0.5)
+ax.set_xlabel("dim")
+ax.set_ylabel("# of posterior samples")
+ax.set_title("Posterior distribution of dimensions")
+fig.savefig(save_dir / "dim.png")
+
+# ================================
+# %% Plot fixed parameter histogram
+# ++++++++++++++++++++++++++++++++
+
+fig, axes = plt.subplots(dpi=300, ncols=len(fixed_param_names))
+for f, fn in enumerate(fixed_param_names):
+    axes = np.atleast_1d(axes)
+    axes[f].hist(est_results["samples"][fn])
+    axes[f].set_xlabel(fn)
+fig.supylabel("# of posterior samples")
+fig.suptitle("Posterior distribution of fixed parameters")
+fig.savefig(save_dir / "fixed.png")
+
+# ================================
+# %% Plot trans parameter histogram
+# ++++++++++++++++++++++++++++++++
+
+for dim in np.unique(n_dims):
+    fig, axes = plt.subplots(dpi=300, ncols=len(trans_param_names), nrows=dim, figsize=(2*len(trans_param_names), 2*dim))
+    axes = np.atleast_2d(axes)
+    for t, tn in enumerate(trans_param_names):
+        for s, sam in enumerate(est_results["samples"][dim][tn].T):
+            axes[s, t].hist(sam)
+            axes[s, 0].set_ylabel(f"seq_{s}")
+        axes[s, t].set_xlabel(f"{tn}")
+    fig.supylabel("# of posterior samples")
+    fig.suptitle(f"Posterior distribution of trans parameters (dim={dim})")
+    fig.tight_layout()
+    fig.savefig(save_dir / f"trans_{dim}.png", bbox_inches="tight")
+
+# ================================
+# %% Plot model
+# ++++++++++++++++++++++++++++++++
+
+plot_data = np.linspace(data[:, 0].min(), data[:, 0].max(), 1000)
+
+for dim in np.unique(n_dims):    
+    fig, ax = plt.subplots(dpi=300)
+    ax.errorbar(data[:, 0], data[:, 1], data[:, 2], ls="none", marker=".", color="black", label="Data")
+    point, lower, upper = est_results["estimates"][dim]["forward"]
+    ax.plot(data[:, 0], point, lw=1, color="red", label="Model")
+    ax.fill_between(data[:, 0], lower, upper, color="red", alpha=0.3, label=r"$1\sigma$ CI")
+    model_val = model_func(
+        plot_data,
+        *[est_results["estimates"][dim][tn][0][..., np.newaxis] for t, tn in enumerate(trans_param_names)],
+    ) + est_results["estimates"]["fqs"][0]
+    ax.plot(plot_data, model_val.T, lw=0.5, color="orange")
+    ax.legend()
+    ax.set_xlabel("MJD")
+    ax.set_ylabel("Flux density [Jy]")
+    ax.set_title(f"Data and model plot (dim={dim})")
+    fig.savefig(save_dir / f"model_{dim}.png")
+    
