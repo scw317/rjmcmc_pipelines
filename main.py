@@ -12,7 +12,7 @@ import pandas as pd
 data_path = Path.home() / "Dropbox/Material/Coauthor/_backup/Kang S. et al., 2026/analysis/bu.txt"
 data = np.loadtxt(data_path, comments="#")
 
-save_dir = Path.home() / "Dropbox/Material/Coauthor/_backup/Kang S. et al., 2026/analysis/bu/7"
+save_dir = Path.home() / "Dropbox/Material/Coauthor/_backup/Kang S. et al., 2026/analysis/bu/test"
 save_dir.mkdir(parents=True, exist_ok=True)
 
 # ================================
@@ -21,16 +21,16 @@ save_dir.mkdir(parents=True, exist_ok=True)
 
 # The limit number of model components
 n_dim_min = 1
-n_dim_max = 30
+n_dim_max = 10
 
 # The final number of posterior samples is
 # (The number of T=1 chains) * (n_iterations - brunin_iterations) / save_every.
 n_chains = 32
-n_iterations = 1500000
-burnin_iterations = 1000000
+n_iterations = 100000
+burnin_iterations = 10000
 save_every = 100
 verbose = True
-print_every = 100000
+print_every = 10000
 
 # ================================
 # %% Parameters preset
