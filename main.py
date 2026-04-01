@@ -9,10 +9,10 @@ import pandas as pd
 # %% Data
 # ++++++++++++++++++++++++++++++++
 
-data_path = Path.home() / "Dropbox/Material/Coauthor/_backup/Kang S. et al., 2026/analysis/bu.txt"
+data_path = Path.home() / "Dropbox/workspace/paper/Kang S. et al., 2026/analysis/bu.txt"
 data = np.loadtxt(data_path, comments="#")
 
-save_dir = Path.home() / "Dropbox/Material/Coauthor/_backup/Kang S. et al., 2026/analysis/bu/test"
+save_dir = Path.home() / "Dropbox/workspace/paper/Kang S. et al., 2026/analysis/bu/test"
 save_dir.mkdir(parents=True, exist_ok=True)
 
 # ================================
@@ -135,7 +135,7 @@ def fwd_func(state):
 # ++++++++++++++++++++++++++++++++
 
 target = bb.likelihood.Target(
-    name="target",
+    name="flux_density",
     dobs=data[:, 1],
     covariance_mat_inv=1/data[:, 2]**2,
 )
