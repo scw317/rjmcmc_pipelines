@@ -7,7 +7,8 @@ class Organizer:
     """Organize sampling results of Bayesbay."""
     
     def __init__(self, inversion: bb.BayesianInversion):
-        self.results = inversion.get_results(concatenate_chains=True)
+        results = inversion.get_results(concatenate_chains=False)
+        
         self.sample_res = {}
         self.est_res = {}
         # Collect information of parameter spaces: Space names, parameter names, dimensions.        

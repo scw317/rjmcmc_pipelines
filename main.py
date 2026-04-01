@@ -26,9 +26,9 @@ n_dim_max = 10
 # The final number of posterior samples is
 # (The number of T=1 chains) * (n_iterations - brunin_iterations) / save_every.
 n_chains = 32
-n_iterations = 100000
-burnin_iterations = 10000
-save_every = 100
+n_iterations = 10000
+burnin_iterations = 1000
+save_every = 1000
 verbose = True
 print_every = 10000
 
@@ -166,7 +166,7 @@ inversion.run(
 
 for chain in inversion.chains:
     chain.print_statistics()
-results = inversion.get_results(concatenate_chains=True)
+results = inversion.get_results(concatenate_chains=False)
     
 # ================================
 # %% Parameter estimation
