@@ -9,10 +9,12 @@ import pandas as pd
 # %% Data
 # ++++++++++++++++++++++++++++++++
 
-data_path = Path.home() / "Dropbox/workspace/paper/Kang S. et al., 2026/analysis/bu.txt"
+# Data path
+data_path = Path.home() / "Dropbox/workspace/paper/Kang2026-sub/analysis/bu.txt"
 data = np.loadtxt(data_path, comments="#")
 
-save_dir = Path.home() / "Dropbox/workspace/paper/Kang S. et al., 2026/analysis/bu/test"
+# Data save path
+save_dir = Path.home() / "Dropbox/workspace/paper/Kang2026-sub/analysis/bu/test2"
 save_dir.mkdir(parents=True, exist_ok=True)
 
 # ================================
@@ -20,8 +22,7 @@ save_dir.mkdir(parents=True, exist_ok=True)
 # ++++++++++++++++++++++++++++++++
 
 # The limit number of model components
-n_dim_min = 1
-n_dim_max = 10
+n_dim_range = (0, 1)
 
 # The final number of posterior samples is
 # (The number of T=1 chains) * (n_iterations - brunin_iterations) / save_every.
@@ -36,9 +37,12 @@ print_every = 10000
 # %% Parameters preset
 # ++++++++++++++++++++++++++++++++
 
+# Trans models are sorted by order of "sort_ref".
 sort_ref = "t0"
 
+# Trans parameters
 trans_param_names = ["t0", "f0", "tau", "s"]
+# Fixed parameters
 fixed_param_names = ["fqs"]
 
 period = data[-1, 0] - data[0, 0]
@@ -50,7 +54,8 @@ trans_param_limits = [
     [0, data[:, 1].max()],
     [time_gaps.min(), period],
     [0.1, 5],
-] 
+]
+
 fixed_param_limits = [
     [0, data[:, 1].min()],
 ]
@@ -90,8 +95,8 @@ for name, lim in zip(fixed_param_names, fixed_param_limits):
 trans_space = bb.parameterization.ParameterSpace(
     name="trans_space",
     n_dimensions=None,
-    n_dimensions_min=n_dim_min,
-    n_dimensions_max=n_dim_max,
+    n_dimensions_min=max(n_dim_range[0], 1),  # Prevent zero-dimension initializing bug
+    n_dimensions_max=n_dim_range[1],
     parameters=trans_priors,
 )
 
@@ -167,6 +172,12 @@ inversion.run(
 for chain in inversion.chains:
     chain.print_statistics()
 results = inversion.get_results(concatenate_chains=False)
+
+results_df = pd.DataFrame(results)
+results_df.to_parquet(
+    path=save_dir / "results.parquet",
+    engine="pyarrow", compression="zstd"
+)
     
 # ================================
 # %% Parameter estimation

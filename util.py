@@ -3,6 +3,46 @@ import numpy as np
 import pandas as pd
 
 
+class PostAnalyzer:
+    """Analyze posterior sampling results.
+    
+    The sampling results is the form of BayesBay output.
+    However, BayesBay is not needed to analyze.
+    """
+    
+    def __init__(self, result_df: pd.DataFrame, concatenate_chains: bool = True):
+        """
+        Parameters
+        ----------
+        result_df : pd.DataFrame
+            This should be the return of bayesbay.BayesianInversion.get_results
+            or at least the same form of that.
+        concatenate_chains : bool, optional
+            Same argum
+            The default is True.
+
+        Returns
+        -------
+        None.
+        """
+        self.result_df = result_df
+        
+        df_with_id = df.copy()
+        df_with_id.index.name = 'origin_grp_id'
+        df_with_id = df_with_id.reset_index()
+        
+        # 2. 모든 열(기존 열 + id 열)에 대해 explode 실행
+        # 'origin_grp_id'는 스칼라 값이므로 explode 시 자동으로 복제(Broadcasting)됩니다.
+        target_cols = df.columns.tolist()
+        df_exploded = df_with_id.explode(target_cols).reset_index(drop=True)
+        
+    
+    def estimate():
+        return None
+    
+    def save():
+        return None
+
 class Organizer:
     """Organize sampling results of Bayesbay."""
     
