@@ -5,6 +5,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
+from util import PostResult
+
 # ================================
 # %% Data
 # ++++++++++++++++++++++++++++++++
@@ -22,7 +24,8 @@ save_dir.mkdir(parents=True, exist_ok=True)
 # ++++++++++++++++++++++++++++++++
 
 # The limit number of model components
-n_dim_range = (0, 1)
+n_dim_min = 1
+n_dim_max = 10
 
 # The final number of posterior samples is
 # (The number of T=1 chains) * (n_iterations - brunin_iterations) / save_every.
@@ -95,8 +98,8 @@ for name, lim in zip(fixed_param_names, fixed_param_limits):
 trans_space = bb.parameterization.ParameterSpace(
     name="trans_space",
     n_dimensions=None,
-    n_dimensions_min=max(n_dim_range[0], 1),  # Prevent zero-dimension initializing bug
-    n_dimensions_max=n_dim_range[1],
+    n_dimensions_min=n_dim_min,
+    n_dimensions_max=n_dim_max,
     parameters=trans_priors,
 )
 
@@ -114,10 +117,8 @@ parameterization.initialize()
 # ++++++++++++++++++++++++++++++++
 
 def model_func(t, t0, f0, tau, s):
-    x = (t - t0) / tau
-    rising_term = np.exp(np.clip(-x, -100, 100))  # Clipping prevents overflow.
-    decaying_term = np.exp(np.clip(x/s, -100, 100))
-    return 2 * f0 / (rising_term + decaying_term + 1e-16)
+    x = np.clip((t - t0) / tau, -100, 100) # Clipping to prevent overflow
+    return 2 * f0 / (np.exp(-x) + np.exp(x) + 1e-16)
 
 
 def fwd_func(state):
@@ -173,12 +174,15 @@ for chain in inversion.chains:
     chain.print_statistics()
 results = inversion.get_results(concatenate_chains=False)
 
-results_df = pd.DataFrame(results)
-results_df.to_parquet(
+result_df = pd.DataFrame(results)
+result_df.to_parquet(
     path=save_dir / "results.parquet",
     engine="pyarrow", compression="zstd"
 )
-    
+
+post_result = PostResult(result_df, False)
+
+'''
 # ================================
 # %% Parameter estimation
 # ++++++++++++++++++++++++++++++++
@@ -342,4 +346,4 @@ for dim in np.unique(n_dims):
     ax.set_ylabel("Flux density [Jy]")
     ax.set_title(f"Data and model plot (dim={dim})")
     fig.savefig(save_dir / f"model_{dim}.png")
-    
+'''

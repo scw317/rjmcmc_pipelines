@@ -1,13 +1,12 @@
-import bayesbay as bb
 import numpy as np
 import pandas as pd
 
 
-class PostAnalyzer:
-    """Analyze posterior sampling results.
+class PostResult:
+    """Organize and analyze posterior sampling results.
     
-    The sampling results is the form of BayesBay output.
-    However, BayesBay is not needed to analyze.
+    The sampling results is the form of BayesBay output,
+    however, the BayesBay library is not needed explicitly.
     """
     
     def __init__(self, result_df: pd.DataFrame, concatenate_chains: bool = True):
@@ -15,34 +14,52 @@ class PostAnalyzer:
         Parameters
         ----------
         result_df : pd.DataFrame
-            This should be the return of bayesbay.BayesianInversion.get_results
+            This should be the return of bayesbay.BayesianInversion.get_results()
             or at least the same form of that.
         concatenate_chains : bool, optional
-            Same argum
+            The same parameter in bayesbay.BayesianInversion.get_results().
+            Whether to aggregate samples from all the Markov chains or to keep them seperate.
             The default is True.
 
         Returns
         -------
         None.
         """
-        self.result_df = result_df
+        if concatenate_chains:
+            if "chain" in result_df:
+                self.result_df = result_df
+            else:
+                # Add meaningless identity chain column just for pipeline
+                chain_col = pd.Series(np.zeros(result_df), name="chain")
+                self.result_df = pd.concat((chain_col, result_df))
+        else:
+            # Numbering chains by indices of the pandas dataframe
+            df_with_id = result_df.copy()
+            df_with_id.index.name = "chain"
+            # The original indices becomes the new column named "chain".
+            df_with_id = df_with_id.reset_index()
+            # Explode chain-wise elements for all columns including "chain"
+            self.result_df = df_with_id.explode(result_df.columns.tolist()).reset_index(drop=True)
         
-        df_with_id = df.copy()
-        df_with_id.index.name = 'origin_grp_id'
-        df_with_id = df_with_id.reset_index()
+        cols = result_df.columns
+        # Find names of parameters and their spaces and targets
+        self.trans_space_names = [col.removesuffix(".n_dimensions") for col in cols if col.endswith(".n_dimensions")]
+        self.trans_param_names = {
+            space:[col for col in cols if col.startswith(f"{space}.")]
+            for space in self.trans_space_names
+        }
+        self.target_names = [col.removesuffix(".dpred") for col in cols if col.endswith(".dpred")]
+        self.fixed_param_names = {
+            col for col in cols if (col is not "chain") and (not col)
+        }
         
-        # 2. 모든 열(기존 열 + id 열)에 대해 explode 실행
-        # 'origin_grp_id'는 스칼라 값이므로 explode 시 자동으로 복제(Broadcasting)됩니다.
-        target_cols = df.columns.tolist()
-        df_exploded = df_with_id.explode(target_cols).reset_index(drop=True)
-        
-    
     def estimate():
         return None
     
     def save():
         return None
-
+    
+'''
 class Organizer:
     """Organize sampling results of Bayesbay."""
     
@@ -111,7 +128,7 @@ class Organizer:
                 self.sample_res[fn] = np.array(samples)                     
         
         return None
-    """
+
     def estimate(self):
         # For trans parameters
         for dim in self.unique_dims:
@@ -163,6 +180,7 @@ class Organizer:
                 np.percentile(est_results["samples"][fn], [50, 15.87, 84.13], axis=0),
                 ))
         return None
-    """
+
     def output(self):
         return None
+'''
