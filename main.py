@@ -5,7 +5,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
-from util import PostResult
+from util import PostProcess
 
 # ================================
 # %% Data
@@ -180,7 +180,7 @@ result_df.to_parquet(
     engine="pyarrow", compression="zstd"
 )
 
-post_result = PostResult(result_df, False)
+post_process = PostProcess(result_df, False)
 
 '''
 # ================================

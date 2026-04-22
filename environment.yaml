@@ -4,8 +4,10 @@ channels:
   - defaults
 dependencies:
   - python>=3.9,<=3.13
+  - arviz
   - bayesbay
   - matplotlib
   - numpy
   - pandas
   - pyarrow
+  - scipy
