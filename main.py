@@ -40,8 +40,9 @@ print_every = 10000
 # %% Parameters preset
 # ++++++++++++++++++++++++++++++++
 
-# Trans models are sorted by order of "sort_ref".
-sort_ref = "t0"
+# Models are sorted by order of the parameter "param"
+# in the parameter space "space" where sort_ref = {space}.{param}.
+sort_ref = "trans.t0"
 
 # Trans parameters
 trans_param_names = ["t0", "f0", "tau", "s"]
@@ -96,7 +97,7 @@ for name, lim in zip(fixed_param_names, fixed_param_limits):
 # ++++++++++++++++++++++++++++++++
 
 trans_space = bb.parameterization.ParameterSpace(
-    name="trans_space",
+    name="trans",
     n_dimensions=None,
     n_dimensions_min=n_dim_min,
     n_dimensions_max=n_dim_max,
@@ -104,7 +105,7 @@ trans_space = bb.parameterization.ParameterSpace(
 )
 
 fixed_space = bb.parameterization.ParameterSpace(
-    name="fixed_space",
+    name="fixed",
     n_dimensions=len(fixed_priors),
     parameters=fixed_priors,
 )
@@ -122,11 +123,11 @@ def model_func(t, t0, f0, tau, s):
 
 
 def fwd_func(state):
-    t0_arr = state["trans_space"]["t0"][..., np.newaxis]
-    f0_arr = state["trans_space"]["f0"][..., np.newaxis]
-    tau_arr = state["trans_space"]["tau"][..., np.newaxis]
-    s_arr = state["trans_space"]["s"][..., np.newaxis]
-    fqs = state["fixed_space"]["fqs"]
+    t0_arr = state["trans"]["t0"][..., np.newaxis]
+    f0_arr = state["trans"]["f0"][..., np.newaxis]
+    tau_arr = state["trans"]["tau"][..., np.newaxis]
+    s_arr = state["trans"]["s"][..., np.newaxis]
+    fqs = state["fixed"]["fqs"]
     
     if t0_arr.size == 0:
         return np.full(data[:, 0].shape, fqs)
