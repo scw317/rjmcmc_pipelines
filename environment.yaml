@@ -10,4 +10,6 @@ dependencies:
   - numpy
   - pandas
   - pyarrow
+  - scikit-learn
   - scipy
+  - umap-learn

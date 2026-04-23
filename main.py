@@ -30,7 +30,7 @@ n_dim_max = 10
 # The final number of posterior samples is
 # (The number of T=1 chains) * (n_iterations - brunin_iterations) / save_every.
 n_chains = 32
-n_iterations = 10000
+n_iterations = 100000
 burnin_iterations = 1000
 save_every = 1000
 verbose = True
@@ -97,7 +97,7 @@ for name, lim in zip(fixed_param_names, fixed_param_limits):
 # ++++++++++++++++++++++++++++++++
 
 trans_space = bb.parameterization.ParameterSpace(
-    name="trans",
+    name="flare",
     n_dimensions=None,
     n_dimensions_min=n_dim_min,
     n_dimensions_max=n_dim_max,
@@ -105,7 +105,7 @@ trans_space = bb.parameterization.ParameterSpace(
 )
 
 fixed_space = bb.parameterization.ParameterSpace(
-    name="fixed",
+    name="quiescent",
     n_dimensions=len(fixed_priors),
     parameters=fixed_priors,
 )
@@ -123,11 +123,11 @@ def model_func(t, t0, f0, tau, s):
 
 
 def fwd_func(state):
-    t0_arr = state["trans"]["t0"][..., np.newaxis]
-    f0_arr = state["trans"]["f0"][..., np.newaxis]
-    tau_arr = state["trans"]["tau"][..., np.newaxis]
-    s_arr = state["trans"]["s"][..., np.newaxis]
-    fqs = state["fixed"]["fqs"]
+    t0_arr = state["flare"]["t0"][..., np.newaxis]
+    f0_arr = state["flare"]["f0"][..., np.newaxis]
+    tau_arr = state["flare"]["tau"][..., np.newaxis]
+    s_arr = state["flare"]["s"][..., np.newaxis]
+    fqs = state["quiescent"]["fqs"]
     
     if t0_arr.size == 0:
         return np.full(data[:, 0].shape, fqs)
@@ -171,17 +171,14 @@ inversion.run(
     print_every=print_every,
 )
 
-for chain in inversion.chains:
-    chain.print_statistics()
-results = inversion.get_results(concatenate_chains=False)
+postsamples = pd.DataFrame(inversion.get_results(concatenate_chains=False))
 
-result_df = pd.DataFrame(results)
-result_df.to_parquet(
-    path=save_dir / "results.parquet",
+postsamples.to_parquet(
+    path=save_dir / "postamples.parquet",
     engine="pyarrow", compression="zstd"
 )
 
-post_process = PostProcess(result_df, False)
+post_process = PostProcess(postsamples, sort_ref, concatenate_chains=False)
 
 '''
 # ================================

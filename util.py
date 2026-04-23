@@ -15,16 +15,16 @@ class PostProcess:
     however, the BayesBay library is not needed explicitly.
     """
     
-    def __init__(self, result_df: pd.DataFrame, sort_ref: str, concatenate_chains: bool = True):
+    def __init__(self, postsamples: pd.DataFrame, sort_ref: str, concatenate_chains: bool = True):
         """
         Parameters
         ----------
-        result_df : pd.DataFrame
-            This should be the return of 'bayesbay.BayesianInversion.get_results'
+        postsamples : pd.DataFrame
+            This should be the return of bayesbay.BayesianInversion.get_results
             or at least the same form of that.
         concatenate_chains : bool, optional
-            The same parameter as 'bayesbay.BayesianInversion.get_results'.
-            Decide whether samples from all chains in 'result_df' are aggregated or seperated.
+            The same parameter as bayesbay.BayesianInversion.get_results.
+            Decide whether samples from all chains in 'postsamples' are aggregated or seperated.
             The default is True.
 
         Returns
@@ -32,53 +32,69 @@ class PostProcess:
         None.
         """
         if concatenate_chains:
-            if "chain" in result_df.columns:
-                self.result_df = result_df
+            if "chain" in postsamples.columns:
+                self.postsamples = postsamples
             else:
                 # Add the meaningless identical chain number (0) column just for pipeline
-                chain_col = pd.Series(np.zeros(result_df), name="chain")
-                self.result_df = pd.concat((chain_col, result_df))
+                chain_col = pd.Series(np.zeros(len(postsamples)), name="chain")
+                self.postsamples = pd.concat((chain_col, postsamples), axis=1)
         else:
             # Numbering chains from indices of the original dataframe
-            df_with_id = result_df.copy()
+            df_with_id = postsamples.copy()
             df_with_id.index.name = "chain"
             # The original indices becomes the new column named "chain".
             df_with_id = df_with_id.reset_index()
             # Explode chain-wise elements for all columns including the "chain" column
-            self.result_df = df_with_id.explode(result_df.columns.tolist()).reset_index(drop=True)
+            self.postsamples = df_with_id.explode(postsamples.columns.tolist()).reset_index(drop=True)
 
-        self.get_names()
-        self.sort_df(sort_ref)
+        self.get_schema()
+        #self.sort_ref = sort_ref
+        #self.sort_df()
     
-    def get_names(self):
-        """Among the dataframe columns, find names of parameters and their spaces and targets."""
-        cols = self.result_df.columns
-        # Only trans-dimensional spaces have the ".n_dimensions" parameter.
-        trans_space_names = [col.removesuffix(".n_dimensions") for col in cols if col.endswith(".n_dimensions")]
-        self.trans_cols = {
-            space:[col for col in cols if col.startswith(f"{space}.") and not col.endswith(".n_dimensions")]
-            for space in trans_space_names
-        }
-        self.target_cols = [col for col in cols if col.endswith(".dpred")]
-        # Anything not matched at the above are fixed-dimensional parameters.
-        exclude_set = {"chain"}
-        exclude_set.update(self.target_cols)
-        exclude_set.update([col for col in cols for space in trans_space_names if col.startswith(f"{space}.")])
-        fixed_col_names = list(set(cols) - exclude_set)
-        self.fixed_cols = {}
-        for col in fixed_col_names:
-            space = col.split('.', 1)[0]
-            self.fixed_cols.setdefault(space, []).append(col)
-    
-    def sort_df_by_dim(self, df: pd.DataFrame, sort_ref: str):
-        ref_col= np.array(df[sort_ref].tolist())
-        indices = np.argsort(ref_col, axis=1)
-        sorted_df = pd.DataFrame(index=df.index)
-        def wrapper(x):
-            return np.take_along_axis(np.array(x.tolist()), indices, axis=1)
-        sorted_df[list(self.trans_cols)].apply(wrapper)
+    def get_schema(self):
+        # Add original column names for reference
+        schema = pd.Series(self.postsamples.columns, name="full_name", dtype=str)
+
+        # Regex logic: 
+        # field: Space or target names (everything before the last dot)
+        # attr: Parameter or attribute names (after the last dot)
+        # This handles "{space}.{param}", "{space}.n_dimensions" and f"{target}.dpred".
+        pattern = r"^(?P<field>.*)\.(?P<attr>.*)$"
+        schema = pd.concat((schema, schema.str.extract(pattern)), axis=1)
         
-    def sort_df(self, sort_ref: str):
+        # Pre-calculate the set of trans-dimensional spaces
+        # A space is trans-dimensional if it contains "n_dimensions" anchor
+        trans_spaces = set(schema.loc[schema["attr"] == "n_dimensions", "field"])
+        
+        # Define categorization conditions and corresponding values
+        # Priority is strictly enforced by the order of the list
+        conditions = [
+            schema["field"].isna() & schema["attr"].isna(),  # Rule 1: Fallback for no split
+            schema["attr"] == "n_dimensions",  # Rule 2: Dimension count column
+            (schema["field"].isin(trans_spaces)) & (schema["attr"] != "n_dimensions"),  # Rule 3: Trans params
+            schema["attr"] == "dpred"  # Rule 4: Forward model output
+        ]
+        
+        # Outpus following conditions
+        outputs = [schema["full_name"], "dim", "trans", "target"]
+        
+        # Apply selection logic with "fixed" as the default case
+        schema["cat"] = np.select(conditions, outputs, default="fixed")
+        
+        self.schema = schema
+                                
+    def sort_df(self):
+        """Element-wise sorting by order of parameters in 'sort_ref'."""
+        
+        def sort_df_by_dim(df: pd.DataFrame):
+            ref_col= np.array(df[self.sort_ref].tolist())
+            indices = np.argsort(ref_col, axis=1)
+            sorted_df = pd.DataFrame(index=df.index)
+            def wrapper(x):
+                arr = np.array(x.tolist())
+                return np.take_along_axis(arr, indices, axis=1)
+            sorted_df[list(self.trans_cols)].apply(wrapper)
+            
         self
 
     def analyze_posterior_modes(self, samples, var_threshold: float = 0.95, init_method="index"):
