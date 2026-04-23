@@ -29,12 +29,12 @@ n_dim_max = 10
 
 # The final number of posterior samples is
 # (The number of T=1 chains) * (n_iterations - brunin_iterations) / save_every.
-n_chains = 32
-n_iterations = 100000
-burnin_iterations = 1000
-save_every = 1000
+n_chains = 8
+n_iterations = 1000
+burnin_iterations = 100
+save_every = 100
 verbose = True
-print_every = 10000
+print_every = 1000
 
 # ================================
 # %% Parameters preset

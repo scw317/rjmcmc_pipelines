@@ -2,6 +2,8 @@ import warnings
 
 import numpy as np
 import pandas as pd
+from scipy.optimize import linear_sum_assignment
+from scipy.spatial.distance import cdist
 from sklearn.cluster import HDBSCAN
 from sklearn.decomposition import PCA
 from sklearn.mixture import GaussianMixture
@@ -50,7 +52,7 @@ class PostProcess:
             self.postsamples = df_with_id.explode(postsamples.columns.tolist()).reset_index(drop=True)
 
         self.get_schema()
-        #self.sort_df(sort_refs)
+        self.align()
     
     def get_schema(self):
         # Add original column names for reference
@@ -84,64 +86,41 @@ class PostProcess:
         
         self.schema = schema
 
-    def align_all_sample_sets(list_of_sample_arrays, params_per_flare=2):
-        """
-        Align multiple sample sets with different flare counts to a master reference.
-        The master reference is chosen as the last sample of the set with maximum flares.
+    def align(self):
+        "Align parameters to solve the label-switching problem."
+        df = self.postsamples  # shallow copy
+        schema = self.schema.copy()
         
-        Parameters:
-        - list_of_sample_arrays: list of np.ndarray, each with shape (n_samples_i, n_params_i)
-        - params_per_flare: int, number of parameters per single flare (e.g., 2 for [t, A])
-        """
-        
-        # --- Step 1: Identify Master Reference ---
-        # Find the maximum number of parameters across all sets
-        max_params = max(arr.shape[1] for arr in list_of_sample_arrays)
-        
-        # Filter sets that have the maximum number of parameters
-        candidate_sets = [arr for arr in list_of_sample_arrays if arr.shape[1] == max_params]
-        
-        # Pick the last sample of the last candidate set as the master reference
-        # master_ref_flat: (max_params,)
-        master_ref_flat = candidate_sets[-1][-1]
-        n_flares_max = max_params // params_per_flare
-        master_ref = master_ref_flat.reshape(n_flares_max, params_per_flare)
-        
-        print(f"Master reference selected with {n_flares_max} flares.")
-    
-        final_aligned_list = []
-    
-        # --- Step 2: Align each set to the Master Reference ---
-        for arr_idx, samples in enumerate(list_of_sample_arrays):
-            n_samples, n_params = samples.shape
-            n_flares_curr = n_params // params_per_flare
+        space_names = schema.loc[schema["cat"]=="dim", "field"].tolist()
+        dim_col_names = schema.loc[schema["cat"]=="dim", "col_name"].tolist()
+        for space, dim_col_name in zip(space_names, dim_col_names):
+            param_mask = (schema["field"] == space) & (schema["cat"] == "trans")
+            param_col_names = schema.loc[param_mask, "col_name"].tolist() 
             
-            # Initialize aligned array for the current set with NaNs
-            # Shape: (n_samples, n_flares_max * params_per_flare)
-            aligned_set = np.full((n_samples, n_flares_max, params_per_flare), np.nan)
+            for dim, group in df.groupby(dim_col_name):
+
+                # Flatten nested lists into a structured (N, K, P) array
+                # Shape: (samples, dim, params)
+                data_array = np.stack(
+                    [np.stack(group[param].to_numpy()) for param in param_col_names],
+                    axis=-1,
+                )
+                
+                # Intra-group label alignment (Hungarian matching algorithm).
+                # The last sample of this K-group becomes the local reference.
+                reference = data_array[-1]  # Shape: (K, P)
+                
+                for i in range(len(group) - 1):
+                    current_sample = data_array[i]  # Shape: (K, P)
+                    # Compute cost matrix in P-dimensional space
+                    cost_matrix = cdist(reference, current_sample, metric="seuclidean")
+                    # Optimal assignment to match reference slots
+                    _, col_idx = linear_sum_assignment(cost_matrix)
+                    
+                    for p, param in enumerate(param_col_names):
+                        print(group)
+                        group.at[i, param] = [current_sample[col_idx][:, p].tolist()]
             
-            for i in range(n_samples):
-                curr_sample = samples[i].reshape(n_flares_curr, params_per_flare)
-                
-                # Step 3: Rectangular Hungarian Matching
-                # Cost Matrix size: (n_flares_max x n_flares_curr)
-                # This identifies which of the current flares best fits the master slots
-                cost_matrix = cdist(master_ref, curr_sample, metric='euclidean')
-                
-                # Find optimal assignment
-                # row_ind: Master Index (0 to K_max-1), col_ind: Current Sample Index
-                row_ind, col_ind = linear_sum_assignment(cost_matrix)
-                
-                # Map parameters to the fixed master slots
-                for r_idx, c_idx in zip(row_ind, col_ind):
-                    aligned_set[i, r_idx] = curr_sample[c_idx]
-            
-            # Flatten back to (n_samples, max_params)
-            final_aligned_list.append(aligned_set.reshape(n_samples, -1))
-            print(f"Set {arr_idx} aligned. (Flares: {n_flares_curr} -> {n_flares_max})")
-    
-        return final_aligned_list, master_ref_flat
-                                
     def sort_df(self, sort_refs):
         """Element-wise sorting by order of parameters in sort_refs."""
         
@@ -153,8 +132,6 @@ class PostProcess:
                 arr = np.array(x.tolist())
                 return np.take_along_axis(arr, indices, axis=1)
             sorted_df[list(self.trans_cols)].apply(wrapper)
-            
-        self
 
     def analyze_posterior_modes(self, samples, var_threshold: float = 0.95, init_method="index"):
         """Robust pipeline for high-dimensional posterior analysis.
