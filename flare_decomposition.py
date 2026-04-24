@@ -40,10 +40,6 @@ print_every = 1000
 # %% Parameters preset
 # ++++++++++++++++++++++++++++++++
 
-# Models are sorted by order of the parameter "param"
-# in the parameter space "space" where sort_ref = {space}.{param}.
-sort_ref = "trans.t0"
-
 # Trans parameters
 trans_param_names = ["t0", "f0", "tau", "s"]
 # Fixed parameters
@@ -171,14 +167,10 @@ inversion.run(
     print_every=print_every,
 )
 
-postsamples = pd.DataFrame(inversion.get_results(concatenate_chains=False))
+results = pd.DataFrame(inversion.get_results(concatenate_chains=False))
 
-postsamples.to_parquet(
-    path=save_dir / "postamples.parquet",
-    engine="pyarrow", compression="zstd"
-)
-
-post_process = PostProcess(postsamples, sort_ref, concatenate_chains=False)
+post_process = PostProcess(results, concatenate_chains=False)
+post_process.save(save_dir)
 
 '''
 # ================================

@@ -1,5 +1,7 @@
+from pathlib import Path
 import warnings
 
+import arviz
 import numpy as np
 import pandas as pd
 from scipy.optimize import linear_sum_assignment
@@ -17,16 +19,13 @@ class PostProcess:
     however, the BayesBay library is not needed explicitly.
     """
     
-    def __init__(self, postsamples: pd.DataFrame, sort_refs: list[str], concatenate_chains: bool = True):
+    def __init__(self, postsamples: pd.DataFrame, concatenate_chains: bool = True):
         """
         Parameters
         ----------
         postsamples : pd.DataFrame
             This should be the return of bayesbay.BayesianInversion.get_results
             or at least the same form of that.
-        sort_refs : list[str]
-            Sorting reference parameter names for each space.
-            A regular expression pattern of parameter is '{space}.{param}'.
         concatenate_chains : bool, optional
             The same parameter as bayesbay.BayesianInversion.get_results. The default is True.
             Decide whether samples from all chains in 'postsamples' are aggregated or seperated.
@@ -133,8 +132,11 @@ class PostProcess:
                 # Write back to the original dataframe in-place
                 for p, param in enumerate(param_col_names):
                     df.loc[group.index, param] = pd.Series(list(aligned_array[..., p]), index=group.index)
-
-    def analyze_posterior_modes(self, samples, var_threshold: float = 0.95, init_method="index"):
+    
+    def analyze(self):
+        return None
+    
+    def estimate(self, samples, var_threshold: float = 0.95, init_method="index"):
         """Robust pipeline for high-dimensional posterior analysis.
         
         Handles extremely small sample sizes and non-linear manifolds.
@@ -268,6 +270,9 @@ class PostProcess:
     
         return results
     
-    def save(self):
-        return None
+    def save(self, save_dir: Path):
+        self.postsamples.to_parquet(
+            path=save_dir / "postamples.parquet",
+            engine="pyarrow", compression="zstd"
+        )
     
