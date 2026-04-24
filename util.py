@@ -87,51 +87,52 @@ class PostProcess:
         self.schema = schema
 
     def align(self):
-        "Align parameters to solve the label-switching problem."
-        df = self.postsamples  # shallow copy
-        schema = self.schema.copy()
+        """Align parameters to solve the label-switching problem.
         
+        Hungarian matching based on standaradized-Euclidean metric.
+        Modifies self.postsamples in-place using the group.index.
+        """
+        df = self.postsamples
+        schema = self.schema
+        
+        # Trans-dimensional spaces and their dimension column names "{space}.n_dimensions"
         space_names = schema.loc[schema["cat"]=="dim", "field"].tolist()
         dim_col_names = schema.loc[schema["cat"]=="dim", "col_name"].tolist()
-        for space, dim_col_name in zip(space_names, dim_col_names):
+        
+        for space, dim_col in zip(space_names, dim_col_names):
             param_mask = (schema["field"] == space) & (schema["cat"] == "trans")
-            param_col_names = schema.loc[param_mask, "col_name"].tolist() 
+            param_col_names = schema.loc[param_mask, "col_name"].tolist()  # "{space}.{param}"
             
-            for dim, group in df.groupby(dim_col_name):
-
-                # Flatten nested lists into a structured (N, K, P) array
-                # Shape: (samples, dim, params)
+            for dim, group in df.groupby(dim_col):
+                # Homogeneous postsamples 3d array: (N, K, P) == (samples, dim, params)
                 data_array = np.stack(
                     [np.stack(group[param].to_numpy()) for param in param_col_names],
                     axis=-1,
                 )
                 
-                # Intra-group label alignment (Hungarian matching algorithm).
-                # The last sample of this K-group becomes the local reference.
-                reference = data_array[-1]  # Shape: (K, P)
+                # Calculate variance for "seuclidean" metric for each parameters
+                variances = np.var(data_array, axis=(0, 1))  # Shape: (P,)
+                variances[variances == 0] = 1.0  # Avoid division by zero
                 
+                aligned_array = np.zeros_like(data_array)
+                aligned_array[-1] = data_array[-1]  # Last is reference to calculate metric.
+                
+                # Perform Hungarian matching for each sample
                 for i in range(len(group) - 1):
                     current_sample = data_array[i]  # Shape: (K, P)
-                    # Compute cost matrix in P-dimensional space
-                    cost_matrix = cdist(reference, current_sample, metric="seuclidean")
-                    # Optimal assignment to match reference slots
+                    
+                    # Compute cost with standardized Euclidean distance refered by the last sample
+                    cost_matrix = cdist(aligned_array[-1], current_sample, metric="seuclidean", V=variances)
+                    
+                    # Solve optimal assignment
                     _, col_idx = linear_sum_assignment(cost_matrix)
                     
-                    for p, param in enumerate(param_col_names):
-                        print(group)
-                        group.at[i, param] = [current_sample[col_idx][:, p].tolist()]
-            
-    def sort_df(self, sort_refs):
-        """Element-wise sorting by order of parameters in sort_refs."""
-        
-        def sort_df_by_dim(df: pd.DataFrame):
-            ref_col= np.array(df[sort_refs].tolist())
-            indices = np.argsort(ref_col, axis=1)
-            sorted_df = pd.DataFrame(index=df.index)
-            def wrapper(x):
-                arr = np.array(x.tolist())
-                return np.take_along_axis(arr, indices, axis=1)
-            sorted_df[list(self.trans_cols)].apply(wrapper)
+                    # Record the aligned current sample
+                    aligned_array[i] = current_sample[col_idx]
+                
+                # Write back to the original dataframe in-place
+                for p, param in enumerate(param_col_names):
+                    df.loc[group.index, param] = pd.Series(list(aligned_array[..., p]), index=group.index)
 
     def analyze_posterior_modes(self, samples, var_threshold: float = 0.95, init_method="index"):
         """Robust pipeline for high-dimensional posterior analysis.
