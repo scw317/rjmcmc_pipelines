@@ -1,7 +1,9 @@
-from pathlib import Path
 import warnings
+from collections import defaultdict
+from pathlib import Path
 
 import arviz
+import bayesbay as bb
 import numpy as np
 import pandas as pd
 from scipy.optimize import linear_sum_assignment
@@ -12,8 +14,78 @@ from sklearn.mixture import GaussianMixture
 from umap import UMAP
 
 
+def orginize_results(
+        inversion: bb.BayesianInversion,
+        save_dir: Path | str | None = None,
+        acceptance_cut: tuple[int] | None = None,
+    ):
+    """Organize sampling results and acceptance statistics.
+    
+    Parameters
+    ----------
+    inversion : bb.BayesianInversion
+    save_dir : Path | str | None, optional
+        Save directory. The default is None.
+    acceptance_cut : tuple[int] | None, optional
+        Chanis of which acceptances are not in acceptance_cut are deleted.
+        If it is None, any chanis are not deleted. The default is None.
+    
+    Retruns
+    -------
+    postsamples : pd.DataFrame
+    acceptances : pd.DataFrame
+    """
+    postsample_list = []
+    markov_chains = inversion.chains
+    for chain in markov_chains:
+        stats = chain.statistics
+        acceptance_dict = defaultdict(list)
+        acceptance_dict["chain"] = [chain.id, chain.id, chain.id]
+        acceptance_dict["kind"] = ["proposed", "accepted", "ratio"]
+        
+        # The number of proposal for each space and total
+        acceptance_dict["total"] = stats["n_proposed_models_total"]
+        for dict_p, dict_a in zip(stats["n_proposed_models"].values(), stats["n_accepted_models"].values()):
+            acceptance_dict.update(dict_p)
+            acceptance_dict.update(dict_a)
+            
+            
+        # The number of acceptance for each space and total
+        acceptance_dict["total"] = stats["n_accepted_models_total"]
+        for val in :
+            acceptance_dict.update(val)
+        
+        # The ratio of acceptance for each space and totla
+        acceptance_dict["total"] = stats["n_accepted_models_total"] / stats["n_proposed_models_total"]
+        
+        
+        res_chain = inversion.get_results_from_chains(chain)
+        postsamples_list.append(
+            pd.concat((np.full(len(res_chain), chain.id), res_chain))
+        )
+            
+        acceptance_stats_list.append(pd.DataFrame((proposed, accepted)))
+        
+    acceptance_stats = pd.concat(acceptance_stats_list)
+    
+    cols = acceptance_stats.columns.tolist()
+    div_cols = cols.remove("chain")
+    div_cols = div_cols.remove("kind")
+    for c, group in acceptance_stats.groupby("chain"):
+        group.loc[group["kind"]=="accepted", div_cols].div(
+            group.loc[group["kind"]=="proposed", div_cols]
+        )
+    
+    if save_dir:
+        postsamples.to_parquet(
+            path=Path(save_dir) / "postamples.parquet",
+            engine="pyarrow", compression="zstd"
+        )
+        acceptances.to_csv(path=Path(save_dir) / "acceptances.csv")
+        
+
 class PostProcess:
-    """Organize and analyze posterior sampling results.
+    """Process and analyze posterior sampling results.
     
     The sampling results should the form of BayesBay output,
     however, the BayesBay library is not needed explicitly.
@@ -24,10 +96,10 @@ class PostProcess:
         Parameters
         ----------
         postsamples : pd.DataFrame
-            This should be the return of bayesbay.BayesianInversion.get_results
+            This should be the return of bb.BayesianInversion.get_results
             or at least the same form of that.
         concatenate_chains : bool, optional
-            The same parameter as bayesbay.BayesianInversion.get_results. The default is True.
+            The same parameter as bb.BayesianInversion.get_results. The default is True.
             Decide whether samples from all chains in 'postsamples' are aggregated or seperated.
             
         Returns

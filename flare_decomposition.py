@@ -5,7 +5,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
-from util import PostProcess
+from util import orginize_results, PostProcess
 
 # ================================
 # %% Data
@@ -169,8 +169,10 @@ inversion.run(
 
 results = pd.DataFrame(inversion.get_results(concatenate_chains=False))
 
+statistics = orginize_results(inversion)
+
 post_process = PostProcess(results, concatenate_chains=False)
-post_process.save(save_dir)
+#post_process.save(save_dir)
 
 '''
 # ================================
