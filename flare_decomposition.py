@@ -167,11 +167,9 @@ inversion.run(
     print_every=print_every,
 )
 
-results = pd.DataFrame(inversion.get_results(concatenate_chains=False))
+postsamples, acceptances = orginize_results(inversion, save_dir)
 
-statistics = orginize_results(inversion)
-
-post_process = PostProcess(results, concatenate_chains=False)
+post_process = PostProcess(postsamples)
 #post_process.save(save_dir)
 
 '''

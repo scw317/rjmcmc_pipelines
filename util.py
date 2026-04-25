@@ -1,5 +1,4 @@
 import warnings
-from collections import defaultdict
 from pathlib import Path
 
 import arviz
@@ -17,71 +16,88 @@ from umap import UMAP
 def orginize_results(
         inversion: bb.BayesianInversion,
         save_dir: Path | str | None = None,
-        acceptance_cut: tuple[int] | None = None,
-    ):
+        acceptance_cut: tuple[int, int] = (0, 1),
+    ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Organize sampling results and acceptance statistics.
     
     Parameters
     ----------
     inversion : bb.BayesianInversion
     save_dir : Path | str | None, optional
-        Save directory. The default is None.
-    acceptance_cut : tuple[int] | None, optional
+        Save directory path. If it is None, returns are not saved.
+        The default is None.
+    acceptance_cut : tuple[int, int] | None, optional
         Chanis of which acceptances are not in acceptance_cut are deleted.
-        If it is None, any chanis are not deleted. The default is None.
+        If it is (0, 1), any chains are not deleted. The default is (0, 1).
     
     Retruns
     -------
     postsamples : pd.DataFrame
+        Posterior samples.
     acceptances : pd.DataFrame
+        The numbers of proposed and accepted samples and their ratio.
     """
-    postsample_list = []
-    markov_chains = inversion.chains
+    markov_chains = inversion.chains  #  bb.MarkovChain instance
+    
+    # Get acceptance statistics from markov_chains
+    acceptance_list = []
     for chain in markov_chains:
         stats = chain.statistics
-        acceptance_dict = defaultdict(list)
-        acceptance_dict["chain"] = [chain.id, chain.id, chain.id]
-        acceptance_dict["kind"] = ["proposed", "accepted", "ratio"]
         
-        # The number of proposal for each space and total
-        acceptance_dict["total"] = stats["n_proposed_models_total"]
+        proposed_dict = {"chain_id": chain.id, "kind": "proposed"}
+        accepted_dict = {"chain_id": chain.id, "kind": "accepted"}
+        ratio_dict = {"chain_id": chain.id, "kind": "ratio"}
+        
+        # The total numbers of proposed and accepted samples
+        proposed_dict["total"] = stats["n_proposed_models_total"]
+        accepted_dict["total"] = stats["n_accepted_models_total"]
+        # Total acceptance ratio
+        ratio_dict["total"] = stats["n_accepted_models_total"] / stats["n_proposed_models_total"]
+        
+        # The numbers of proposed and accepted samples for each space
         for dict_p, dict_a in zip(stats["n_proposed_models"].values(), stats["n_accepted_models"].values()):
-            acceptance_dict.update(dict_p)
-            acceptance_dict.update(dict_a)
-            
-            
-        # The number of acceptance for each space and total
-        acceptance_dict["total"] = stats["n_accepted_models_total"]
-        for val in :
-            acceptance_dict.update(val)
+            proposed_dict.update(dict_p)
+            accepted_dict.update(dict_a)
+            # Acceptance ratios for each space
+            for (key, val_p), val_a in zip(dict_p.items(), dict_a.values()):
+                ratio_dict[key] = (val_a / val_p)
         
-        # The ratio of acceptance for each space and totla
-        acceptance_dict["total"] = stats["n_accepted_models_total"] / stats["n_proposed_models_total"]
-        
-        
-        res_chain = inversion.get_results_from_chains(chain)
-        postsamples_list.append(
-            pd.concat((np.full(len(res_chain), chain.id), res_chain))
-        )
-            
-        acceptance_stats_list.append(pd.DataFrame((proposed, accepted)))
-        
-    acceptance_stats = pd.concat(acceptance_stats_list)
+        acceptance_df = pd.DataFrame((proposed_dict, accepted_dict, ratio_dict))
+        acceptance_list.append(acceptance_df)
+    acceptances = pd.concat(acceptance_list, ignore_index=True)
     
-    cols = acceptance_stats.columns.tolist()
-    div_cols = cols.remove("chain")
-    div_cols = div_cols.remove("kind")
-    for c, group in acceptance_stats.groupby("chain"):
-        group.loc[group["kind"]=="accepted", div_cols].div(
-            group.loc[group["kind"]=="proposed", div_cols]
-        )
+    # Get list of chain IDs of which total acceptance ratios are in the acceptance cutoff.
+    total_ratios = acceptances.loc[acceptances["kind"]=="ratio", "total"]
+    successed_mask = (total_ratios > acceptance_cut[0]) & (total_ratios < acceptance_cut[1])
+    successed_chain_ids = acceptances.loc[acceptances["kind"]=="ratio"].loc[successed_mask, "chain_id"].tolist()
+    
+    # Only return acceptances if any chains do not pass the acceptance cutoff.
+    if len(successed_chain_ids) == 0:
+        if save_dir:
+            acceptances.to_csv(Path(save_dir) / "acceptances.csv")
+        return None, acceptances
+    
+    # Get posterior samples from markov_chains
+    postsample_list = []
+    for chain in markov_chains:
+        if chain.id in successed_chain_ids:
+            postsample_df = pd.DataFrame(inversion.get_results_from_chains(chain))
+            
+            # Add the chain ID column
+            chain_col = pd.Series(np.full(len(postsample_df), chain.id), name="chain_id")
+            postsample_df = pd.concat((chain_col, postsample_df), axis=1)
+            
+            postsample_list.append(postsample_df)
+    postsamples = pd.concat(postsample_list, ignore_index=True)
     
     if save_dir:
         postsamples.to_parquet(
             path=Path(save_dir) / "postamples.parquet",
             engine="pyarrow", compression="zstd"
         )
-        acceptances.to_csv(path=Path(save_dir) / "acceptances.csv")
+        acceptances.to_csv(Path(save_dir) / "acceptances.csv")
+    
+    return postsamples, acceptances
         
 
 class PostProcess:
@@ -107,19 +123,19 @@ class PostProcess:
         None.
         """
         if concatenate_chains:
-            if "chain" in postsamples.columns:
+            if "chain_id" in postsamples.columns:
                 self.postsamples = postsamples
             else:
-                # Add the meaningless identical chain number (0) column just for pipeline
-                chain_col = pd.Series(np.zeros(len(postsamples)), name="chain")
+                # Add the meaningless identical chain ID (0) column just for pipeline
+                chain_col = pd.Series(np.zeros(len(postsamples)), name="chain_id")
                 self.postsamples = pd.concat((chain_col, postsamples), axis=1)
         else:
             # Numbering chains from indices of the original dataframe
             df_with_id = postsamples.copy()
-            df_with_id.index.name = "chain"
-            # The original indices becomes the new column named "chain".
+            df_with_id.index.name = "chain_id"
+            # The original indices becomes the new column named "chain_id".
             df_with_id = df_with_id.reset_index()
-            # Explode chain-wise elements for all columns including the "chain" column
+            # Explode chain-wise elements for all columns including the "chain_id" column
             self.postsamples = df_with_id.explode(postsamples.columns.tolist()).reset_index(drop=True)
 
         self.get_schema()
@@ -175,6 +191,9 @@ class PostProcess:
             param_col_names = schema.loc[param_mask, "col_name"].tolist()  # "{space}.{param}"
             
             for dim, group in df.groupby(dim_col):
+                if len(group) == 0:
+                    continue
+                
                 # Homogeneous postsamples 3d array: (N, K, P) == (samples, dim, params)
                 data_array = np.stack(
                     [np.stack(group[param].to_numpy()) for param in param_col_names],
