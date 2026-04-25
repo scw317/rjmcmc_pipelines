@@ -1,7 +1,7 @@
 import warnings
 from pathlib import Path
 
-import arviz
+import arviz as az
 import bayesbay as bb
 import numpy as np
 import pandas as pd
@@ -13,10 +13,95 @@ from sklearn.mixture import GaussianMixture
 from umap import UMAP
 
 
+def get_column_schema(postsamples: pd.DataFrame) -> pd.DataFrame:
+    """Get column schema of the standard form of BayesBay post sample results."""
+    # Add original column names for reference
+    schema = pd.Series(postsamples.columns, name="col_name", dtype=str)
+
+    # Regex logic: 
+    # field: Space or target names (everything before the last dot)
+    # attr: Parameter or attribute names (after the last dot)
+    # This handles "{space}.{param}", "{space}.n_dimensions" and f"{target}.dpred".
+    pattern = r"^(?P<field>.*)\.(?P<attr>.*)$"
+    schema = pd.concat((schema, schema.str.extract(pattern)), axis=1)
+    
+    # Pre-calculate the set of trans-dimensional spaces
+    # A space is trans-dimensional if it contains "n_dimensions" anchor
+    trans_spaces = set(schema.loc[schema["attr"] == "n_dimensions", "field"])
+    
+    # Define categorization conditions and corresponding values
+    # Priority is strictly enforced by the order of the list
+    conditions = [
+        schema["field"].isna() & schema["attr"].isna(),  # Rule 1: Fallback for no split
+        schema["attr"] == "n_dimensions",  # Rule 2: Dimension count column
+        (schema["field"].isin(trans_spaces)) & (schema["attr"] != "n_dimensions"),  # Rule 3: Trans params
+        schema["attr"] == "dpred"  # Rule 4: Forward model output
+    ]
+    
+    # Outpus following conditions
+    outputs = [schema["col_name"], "dim", "trans", "target"]
+    
+    # Apply selection logic with "fixed" as the default case
+    schema["cat"] = np.select(conditions, outputs, default="fixed")
+    
+    return schema
+
+
+def align_parameters(postsamples: pd.DataFrame, schema: pd.DataFrame) -> pd.DataFrame:
+    """Align parameters to solve the label-switching problem.
+    
+    Hungarian matching based on standaradized-Euclidean metric.
+    """
+    df = postsamples
+    
+    # Trans-dimensional spaces and their dimension column names "{space}.n_dimensions"
+    space_names = schema.loc[schema["cat"]=="dim", "field"].tolist()
+    dim_col_names = schema.loc[schema["cat"]=="dim", "col_name"].tolist()
+    
+    for space, dim_col in zip(space_names, dim_col_names):
+        param_mask = (schema["field"] == space) & (schema["cat"] == "trans")
+        param_col_names = schema.loc[param_mask, "col_name"].tolist()  # "{space}.{param}"
+        
+        for dim, group in df.groupby(dim_col):
+            if len(group) == 0:
+                continue
+            
+            # Homogeneous postsamples 3d array: (N, K, P) == (samples, dim, params)
+            data_array = np.stack(
+                [np.stack(group[param].to_numpy()) for param in param_col_names],
+                axis=-1,
+            )
+            
+            # Calculate variance for "seuclidean" metric for each parameters
+            variances = np.var(data_array, axis=(0, 1))  # Shape: (P,)
+            variances[variances == 0] = 1.0  # Avoid division by zero
+            
+            aligned_array = np.zeros_like(data_array)
+            aligned_array[-1] = data_array[-1]  # Last is reference to calculate metric.
+            
+            # Perform Hungarian matching for each sample
+            for i in range(len(group) - 1):
+                current_sample = data_array[i]  # Shape: (K, P)
+                
+                # Compute cost with standardized Euclidean distance refered by the last sample
+                cost_matrix = cdist(aligned_array[-1], current_sample, metric="seuclidean", V=variances)
+                
+                # Solve optimal assignment
+                _, col_idx = linear_sum_assignment(cost_matrix)
+                
+                # Record the aligned current sample
+                aligned_array[i] = current_sample[col_idx]
+            
+            # Write back to the original dataframe in-place
+            for p, param in enumerate(param_col_names):
+                df.loc[group.index, param] = pd.Series(list(aligned_array[..., p]), index=group.index)
+    
+    return df
+
+
 def orginize_results(
         inversion: bb.BayesianInversion,
         save_dir: Path | str | None = None,
-        acceptance_cut: tuple[int, int] = (0, 1),
     ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Organize sampling results and acceptance statistics.
     
@@ -26,9 +111,6 @@ def orginize_results(
     save_dir : Path | str | None, optional
         Save directory path. If it is None, returns are not saved.
         The default is None.
-    acceptance_cut : tuple[int, int] | None, optional
-        Chanis of which acceptances are not in acceptance_cut are deleted.
-        If it is (0, 1), any chains are not deleted. The default is (0, 1).
     
     Retruns
     -------
@@ -39,9 +121,11 @@ def orginize_results(
     """
     markov_chains = inversion.chains  #  bb.MarkovChain instance
     
-    # Get acceptance statistics from markov_chains
+    # Get acceptance statistics and post sample from markov_chains
     acceptance_list = []
+    postsample_list = []
     for chain in markov_chains:
+        # Acceptance statistics
         stats = chain.statistics
         
         proposed_dict = {"chain_id": chain.id, "kind": "proposed"}
@@ -64,40 +148,38 @@ def orginize_results(
         
         acceptance_df = pd.DataFrame((proposed_dict, accepted_dict, ratio_dict))
         acceptance_list.append(acceptance_df)
+        
+        # Post sample
+        postsample_df = pd.DataFrame(inversion.get_results_from_chains(chain))
+        
+        # Add the acceptance ratio column
+        acceptance_ratio_col = pd.Series(
+            np.full(len(postsample_df), ratio_dict["total"]),
+            name="acceptance_ratio"
+        )
+        postsample_df = pd.concat((acceptance_ratio_col, postsample_df), axis=1)
+        
+        # Add the chain ID column
+        chain_id_col = pd.Series(np.full(len(postsample_df), chain.id), name="chain_id")
+        postsample_df = pd.concat((chain_id_col, postsample_df), axis=1)
+        
+        postsample_list.append(postsample_df)            
+        
     acceptances = pd.concat(acceptance_list, ignore_index=True)
-    
-    # Get list of chain IDs of which total acceptance ratios are in the acceptance cutoff.
-    total_ratios = acceptances.loc[acceptances["kind"]=="ratio", "total"]
-    successed_mask = (total_ratios > acceptance_cut[0]) & (total_ratios < acceptance_cut[1])
-    successed_chain_ids = acceptances.loc[acceptances["kind"]=="ratio"].loc[successed_mask, "chain_id"].tolist()
-    
-    # Only return acceptances if any chains do not pass the acceptance cutoff.
-    if len(successed_chain_ids) == 0:
-        if save_dir:
-            acceptances.to_csv(Path(save_dir) / "acceptances.csv")
-        return None, acceptances
-    
-    # Get posterior samples from markov_chains
-    postsample_list = []
-    for chain in markov_chains:
-        if chain.id in successed_chain_ids:
-            postsample_df = pd.DataFrame(inversion.get_results_from_chains(chain))
-            
-            # Add the chain ID column
-            chain_col = pd.Series(np.full(len(postsample_df), chain.id), name="chain_id")
-            postsample_df = pd.concat((chain_col, postsample_df), axis=1)
-            
-            postsample_list.append(postsample_df)
     postsamples = pd.concat(postsample_list, ignore_index=True)
     
+    # Align parameters to solve the label-switching problem
+    schema = get_column_schema(postsamples)
+    postsamples = align_parameters(postsamples, schema)
+    
     if save_dir:
+        acceptances.to_csv(Path(save_dir) / "acceptances.csv")
         postsamples.to_parquet(
             path=Path(save_dir) / "postamples.parquet",
             engine="pyarrow", compression="zstd"
         )
-        acceptances.to_csv(Path(save_dir) / "acceptances.csv")
     
-    return postsamples, acceptances
+    return acceptances, postsamples
         
 
 class PostProcess:
@@ -127,8 +209,8 @@ class PostProcess:
                 self.postsamples = postsamples
             else:
                 # Add the meaningless identical chain ID (0) column just for pipeline
-                chain_col = pd.Series(np.zeros(len(postsamples)), name="chain_id")
-                self.postsamples = pd.concat((chain_col, postsamples), axis=1)
+                chain_id_col = pd.Series(np.zeros(len(postsamples)), name="chain_id")
+                self.postsamples = pd.concat((chain_id_col, postsamples), axis=1)
         else:
             # Numbering chains from indices of the original dataframe
             df_with_id = postsamples.copy()
@@ -139,95 +221,71 @@ class PostProcess:
             self.postsamples = df_with_id.explode(postsamples.columns.tolist()).reset_index(drop=True)
 
         self.get_schema()
-        self.align()
     
     def get_schema(self):
-        # Add original column names for reference
-        schema = pd.Series(self.postsamples.columns, name="col_name", dtype=str)
-
-        # Regex logic: 
-        # field: Space or target names (everything before the last dot)
-        # attr: Parameter or attribute names (after the last dot)
-        # This handles "{space}.{param}", "{space}.n_dimensions" and f"{target}.dpred".
-        pattern = r"^(?P<field>.*)\.(?P<attr>.*)$"
-        schema = pd.concat((schema, schema.str.extract(pattern)), axis=1)
-        
-        # Pre-calculate the set of trans-dimensional spaces
-        # A space is trans-dimensional if it contains "n_dimensions" anchor
-        trans_spaces = set(schema.loc[schema["attr"] == "n_dimensions", "field"])
-        
-        # Define categorization conditions and corresponding values
-        # Priority is strictly enforced by the order of the list
-        conditions = [
-            schema["field"].isna() & schema["attr"].isna(),  # Rule 1: Fallback for no split
-            schema["attr"] == "n_dimensions",  # Rule 2: Dimension count column
-            (schema["field"].isin(trans_spaces)) & (schema["attr"] != "n_dimensions"),  # Rule 3: Trans params
-            schema["attr"] == "dpred"  # Rule 4: Forward model output
-        ]
-        
-        # Outpus following conditions
-        outputs = [schema["col_name"], "dim", "trans", "target"]
-        
-        # Apply selection logic with "fixed" as the default case
-        schema["cat"] = np.select(conditions, outputs, default="fixed")
-        
-        self.schema = schema
+        self.schema = get_column_schema(self.postsamples)
 
     def align(self):
-        """Align parameters to solve the label-switching problem.
+        self.align_parameters(self.postsamples, self.schema)
+    
+    def to_arviz(self):
+        """Convert the aligned posterior samples into ArviZ InferenceData objects.
         
-        Hungarian matching based on standaradized-Euclidean metric.
-        Modifies self.postsamples in-place using the group.index.
+        Returns
+        -------
+        dict of az.InferenceData
+            A dictionary where keys are the number of flares (K) and values 
+            are the corresponding InferenceData objects.
         """
         df = self.postsamples
         schema = self.schema
         
-        # Trans-dimensional spaces and their dimension column names "{space}.n_dimensions"
-        space_names = schema.loc[schema["cat"]=="dim", "field"].tolist()
-        dim_col_names = schema.loc[schema["cat"]=="dim", "col_name"].tolist()
+        # ArviZ expects fixed dimensions, so we group by flare counts (K)
+        # Using the first dimension column as a primary key for trans-dimensional grouping
+        dim_col = schema.loc[schema["cat"] == "dim", "col_name"].iloc[0]
         
-        for space, dim_col in zip(space_names, dim_col_names):
-            param_mask = (schema["field"] == space) & (schema["cat"] == "trans")
-            param_col_names = schema.loc[param_mask, "col_name"].tolist()  # "{space}.{param}"
+        inf_data_dict = {}
+        
+        # 1. Group by the number of flares (K)
+        for k, group in df.groupby(dim_col):
+            if k == 0: continue
             
-            for dim, group in df.groupby(dim_col):
-                if len(group) == 0:
-                    continue
-                
-                # Homogeneous postsamples 3d array: (N, K, P) == (samples, dim, params)
-                data_array = np.stack(
-                    [np.stack(group[param].to_numpy()) for param in param_col_names],
-                    axis=-1,
-                )
-                
-                # Calculate variance for "seuclidean" metric for each parameters
-                variances = np.var(data_array, axis=(0, 1))  # Shape: (P,)
-                variances[variances == 0] = 1.0  # Avoid division by zero
-                
-                aligned_array = np.zeros_like(data_array)
-                aligned_array[-1] = data_array[-1]  # Last is reference to calculate metric.
-                
-                # Perform Hungarian matching for each sample
-                for i in range(len(group) - 1):
-                    current_sample = data_array[i]  # Shape: (K, P)
+            posterior_dict = {}
+            
+            # 2. Iterate through each chain to reconstruct (chain, draw, ...) structure
+            unique_chains = group["chain"].unique()
+            
+            # Identify variables to include in posterior
+            # We include 'trans' parameters for this space and all 'fixed' parameters
+            target_cols = schema.loc[schema["cat"].isin(["trans", "fixed"]), "col_name"].tolist()
+            
+            for col in target_cols:
+                chain_samples = []
+                for c_id in unique_chains:
+                    # Extract samples for specific chain and K
+                    c_group = group[group["chain"] == c_id]
                     
-                    # Compute cost with standardized Euclidean distance refered by the last sample
-                    cost_matrix = cdist(aligned_array[-1], current_sample, metric="seuclidean", V=variances)
-                    
-                    # Solve optimal assignment
-                    _, col_idx = linear_sum_assignment(cost_matrix)
-                    
-                    # Record the aligned current sample
-                    aligned_array[i] = current_sample[col_idx]
+                    # Stack the 1D arrays/lists stored in cells into a 2D array (draw, K) or (draw, 1)
+                    # If it's a fixed scalar, np.stack will handle it. 
+                    # If it's a list/array of length K, it becomes (draw, K).
+                    samples = np.stack(c_group[col].to_numpy())
+                    chain_samples.append(samples)
                 
-                # Write back to the original dataframe in-place
-                for p, param in enumerate(param_col_names):
-                    df.loc[group.index, param] = pd.Series(list(aligned_array[..., p]), index=group.index)
+                # ArviZ shape: (chain, draw, *dims)
+                # data_array shape: (len(unique_chains), draws_per_chain, K or 1)
+                data_array = np.stack(chain_samples)
+                
+                # Clean up the variable name (e.g., 'flare.t0' -> 't0')
+                var_name = schema.loc[schema["col_name"] == col, "attr"].iloc[0]
+                posterior_dict[var_name] = data_array
     
-    def analyze(self):
-        return None
+            # 3. Create InferenceData object for this specific K
+            inf_data_dict[k] = az.from_dict(posterior=posterior_dict)
+            print(f"ArviZ InferenceData for K={k} created with {len(unique_chains)} chains.")
     
-    def estimate(self, samples, var_threshold: float = 0.95, init_method="index"):
+        return inf_data_dict
+    
+    def to_gmm(self, samples, var_threshold: float = 0.95, init_method="index"):
         """Robust pipeline for high-dimensional posterior analysis.
         
         Handles extremely small sample sizes and non-linear manifolds.
@@ -360,10 +418,4 @@ class PostProcess:
             })
     
         return results
-    
-    def save(self, save_dir: Path):
-        self.postsamples.to_parquet(
-            path=save_dir / "postamples.parquet",
-            engine="pyarrow", compression="zstd"
-        )
     

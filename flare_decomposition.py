@@ -167,10 +167,8 @@ inversion.run(
     print_every=print_every,
 )
 
-postsamples, acceptances = orginize_results(inversion, save_dir)
-
+acceptances, postsamples = orginize_results(inversion, save_dir)
 post_process = PostProcess(postsamples)
-#post_process.save(save_dir)
 
 '''
 # ================================
