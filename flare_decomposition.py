@@ -1,9 +1,7 @@
 from pathlib import Path
 
 import bayesbay as bb
-import matplotlib.pyplot as plt
 import numpy as np
-import pandas as pd
 
 from util import orginize_results, PostProcess
 
@@ -24,26 +22,32 @@ save_dir.mkdir(parents=True, exist_ok=True)
 # ++++++++++++++++++++++++++++++++
 
 # The limit number of model components
-n_dim_min = 1
+n_dim_min = 10
 n_dim_max = 10
 
 # The final number of posterior samples is
 # (The number of T=1 chains) * (n_iterations - brunin_iterations) / save_every.
 n_chains = 8
-n_iterations = 10000
+n_iterations = 100000
 burnin_iterations = 100
 save_every = 100
-verbose = True
+verbose = False
 print_every = 1000
 
 # ================================
 # %% Parameters preset
 # ++++++++++++++++++++++++++++++++
 
-# Trans parameters
+# Trans-dimensional space
+trans_space_name = "flare"
 trans_param_names = ["t0", "f0", "tau", "s"]
-# Fixed parameters
+
+# Fixed-dimensional space
+fixed_space_name = "quiescent"
 fixed_param_names = ["fqs"]
+
+# Sort by sort_ref
+sort_refs = ["flare.t0"]
 
 period = data[-1, 0] - data[0, 0]
 time_gaps = (np.roll(data[:, 0], -1) - data[:, 0])[:-1]
@@ -93,7 +97,7 @@ for name, lim in zip(fixed_param_names, fixed_param_limits):
 # ++++++++++++++++++++++++++++++++
 
 trans_space = bb.parameterization.ParameterSpace(
-    name="flare",
+    name=trans_space_name,
     n_dimensions=None,
     n_dimensions_min=n_dim_min,
     n_dimensions_max=n_dim_max,
@@ -101,7 +105,7 @@ trans_space = bb.parameterization.ParameterSpace(
 )
 
 fixed_space = bb.parameterization.ParameterSpace(
-    name="quiescent",
+    name=fixed_space_name,
     n_dimensions=len(fixed_priors),
     parameters=fixed_priors,
 )
@@ -119,11 +123,11 @@ def model_func(t, t0, f0, tau, s):
 
 
 def fwd_func(state):
-    t0_arr = state["flare"]["t0"][..., np.newaxis]
-    f0_arr = state["flare"]["f0"][..., np.newaxis]
-    tau_arr = state["flare"]["tau"][..., np.newaxis]
-    s_arr = state["flare"]["s"][..., np.newaxis]
-    fqs = state["quiescent"]["fqs"]
+    t0_arr = state[trans_space_name]["t0"][..., np.newaxis]
+    f0_arr = state[trans_space_name]["f0"][..., np.newaxis]
+    tau_arr = state[trans_space_name]["tau"][..., np.newaxis]
+    s_arr = state[trans_space_name]["s"][..., np.newaxis]
+    fqs = state[fixed_space_name]["fqs"]
     
     if t0_arr.size == 0:
         return np.full(data[:, 0].shape, fqs)
@@ -167,7 +171,7 @@ inversion.run(
     print_every=print_every,
 )
 
-acceptances, postsamples = orginize_results(inversion, save_dir)
+postsamples, acceptances = orginize_results(inversion, save_dir, sort_refs)
 post_process = PostProcess(postsamples)
 
 '''

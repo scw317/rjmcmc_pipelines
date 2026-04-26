@@ -13,8 +13,36 @@ from sklearn.mixture import GaussianMixture
 from umap import UMAP
 
 
+def get_unique_path(path: Path | str) -> Path:
+    """Generate a unique file path by appending an incrementing number if the file exists.
+    
+    Format: {path}_{num}.{suffix}
+    """
+    path = Path(path)
+    
+    # If path does not exist, return it immediately
+    if not path.exists():
+        return path
+
+    parent = path.parent
+    stem = path.stem
+    suffix = path.suffix
+    
+    counter = 1
+    while True:
+        # Construct new path with incremented number
+        new_path = parent / f"{stem}_{counter}{suffix}"
+        if not new_path.exists():
+            return new_path
+        counter += 1
+
+
 def get_column_schema(postsamples: pd.DataFrame) -> pd.DataFrame:
-    """Get column schema of the standard form of BayesBay post sample results."""
+    """Get column schema of the standard form of BayesBay posterior sample results.
+    
+    Recognize which column represents dimension features, targets,
+    or parameters of trans or fixed dimensional space, and so on.
+    """
     # Add original column names for reference
     schema = pd.Series(postsamples.columns, name="col_name", dtype=str)
 
@@ -47,21 +75,48 @@ def get_column_schema(postsamples: pd.DataFrame) -> pd.DataFrame:
     return schema
 
 
-def align_parameters(postsamples: pd.DataFrame, schema: pd.DataFrame) -> pd.DataFrame:
+def align_parameters(
+        postsamples: pd.DataFrame,
+        schema: pd.DataFrame,
+        sort_refs: list[str] | None = None,
+        ) -> pd.DataFrame:
     """Align parameters to solve the label-switching problem.
     
     Hungarian matching based on standaradized-Euclidean metric.
+    
+    Parameters
+    ----------
+    postsamples : pd.DataFrame
+    schema : pd.DataFrame
+    sort_refs : list[str] | None, optional
+        Sorting reference parmaters for each trans-dimensional space.
+        If it is None, not sorted. The default is None.
+        ["{space}.{param}", ...].
+    
+    Returns
+    -------
+    df : pd.DataFrame
     """
     df = postsamples
     
     # Trans-dimensional spaces and their dimension column names "{space}.n_dimensions"
-    space_names = schema.loc[schema["cat"]=="dim", "field"].tolist()
+    trans_space_names = schema.loc[schema["cat"]=="dim", "field"].tolist()
     dim_col_names = schema.loc[schema["cat"]=="dim", "col_name"].tolist()
     
-    for space, dim_col in zip(space_names, dim_col_names):
+    # Loop for each parameter space
+    for space, dim_col in zip(trans_space_names, dim_col_names):
         param_mask = (schema["field"] == space) & (schema["cat"] == "trans")
-        param_col_names = schema.loc[param_mask, "col_name"].tolist()  # "{space}.{param}"
+        param_col_names = schema.loc[param_mask, "col_name"].tolist()  # "{space}.{param}" list
         
+        if sort_refs is not None:
+            # Find a parameter name for sorting reference and its index in param_col_names
+            ref_info = [(r, ref) for r, ref in enumerate(sort_refs) if ref in param_col_names]
+            if ref_info:
+                ref_idx, ref_name = ref_info[0]
+        else:
+            ref_info = None
+        
+        # Loop for each dimension
         for dim, group in df.groupby(dim_col):
             if len(group) == 0:
                 continue
@@ -71,7 +126,12 @@ def align_parameters(postsamples: pd.DataFrame, schema: pd.DataFrame) -> pd.Data
                 [np.stack(group[param].to_numpy()) for param in param_col_names],
                 axis=-1,
             )
-            
+
+            # Sorting along a dimension axis (axis=1) for a specific parameter (ref_idx)
+            if ref_info:
+                sort_idxs = np.argsort(data_array[..., ref_idx], axis=1)
+                data_array = np.take_along_axis(data_array, sort_idxs[..., np.newaxis], axis=1)
+
             # Calculate variance for "seuclidean" metric for each parameters
             variances = np.var(data_array, axis=(0, 1))  # Shape: (P,)
             variances[variances == 0] = 1.0  # Avoid division by zero
@@ -102,6 +162,7 @@ def align_parameters(postsamples: pd.DataFrame, schema: pd.DataFrame) -> pd.Data
 def orginize_results(
         inversion: bb.BayesianInversion,
         save_dir: Path | str | None = None,
+        sort_refs: list[str] | None = None,
     ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Organize sampling results and acceptance statistics.
     
@@ -111,7 +172,9 @@ def orginize_results(
     save_dir : Path | str | None, optional
         Save directory path. If it is None, returns are not saved.
         The default is None.
-    
+    sort_refs: list[str] | None = None,
+        Sorting reference parmaters for each trans-dimensional space.
+        
     Retruns
     -------
     postsamples : pd.DataFrame
@@ -121,7 +184,7 @@ def orginize_results(
     """
     markov_chains = inversion.chains  #  bb.MarkovChain instance
     
-    # Get acceptance statistics and post sample from markov_chains
+    # Get acceptance statistics and posterior samples from markov_chains
     acceptance_list = []
     postsample_list = []
     for chain in markov_chains:
@@ -144,43 +207,39 @@ def orginize_results(
             accepted_dict.update(dict_a)
             # Acceptance ratios for each space
             for (key, val_p), val_a in zip(dict_p.items(), dict_a.values()):
-                ratio_dict[key] = (val_a / val_p)
+                ratio_dict[key] = val_a / val_p
         
         acceptance_df = pd.DataFrame((proposed_dict, accepted_dict, ratio_dict))
         acceptance_list.append(acceptance_df)
         
-        # Post sample
+        # Posterior samples
         postsample_df = pd.DataFrame(inversion.get_results_from_chains(chain))
         
         # Add the acceptance ratio column
-        acceptance_ratio_col = pd.Series(
-            np.full(len(postsample_df), ratio_dict["total"]),
-            name="acceptance_ratio"
-        )
+        acceptance_ratio_col = pd.Series(np.full(len(postsample_df), ratio_dict["total"]), name="acceptance_ratio")
         postsample_df = pd.concat((acceptance_ratio_col, postsample_df), axis=1)
         
         # Add the chain ID column
         chain_id_col = pd.Series(np.full(len(postsample_df), chain.id), name="chain_id")
         postsample_df = pd.concat((chain_id_col, postsample_df), axis=1)
         
-        postsample_list.append(postsample_df)            
+        postsample_list.append(postsample_df)   
         
     acceptances = pd.concat(acceptance_list, ignore_index=True)
     postsamples = pd.concat(postsample_list, ignore_index=True)
     
     # Align parameters to solve the label-switching problem
     schema = get_column_schema(postsamples)
-    postsamples = align_parameters(postsamples, schema)
+    postsamples = align_parameters(postsamples, schema, sort_refs)
     
     if save_dir:
-        acceptances.to_csv(Path(save_dir) / "acceptances.csv")
-        postsamples.to_parquet(
-            path=Path(save_dir) / "postamples.parquet",
-            engine="pyarrow", compression="zstd"
-        )
+        postsample_save_path = get_unique_path(Path(save_dir) / "postamples.parquet")
+        postsamples.to_parquet(path=postsample_save_path, engine="pyarrow", compression="zstd")
+        acceptance_save_path = get_unique_path(Path(save_dir) / "acceptances.csv")
+        acceptances.to_csv(acceptance_save_path)
     
-    return acceptances, postsamples
-        
+    return postsamples, acceptances
+
 
 class PostProcess:
     """Process and analyze posterior sampling results.
@@ -196,6 +255,7 @@ class PostProcess:
         postsamples : pd.DataFrame
             This should be the return of bb.BayesianInversion.get_results
             or at least the same form of that.
+            Highly recommended to use the return of organize_results.
         concatenate_chains : bool, optional
             The same parameter as bb.BayesianInversion.get_results. The default is True.
             Decide whether samples from all chains in 'postsamples' are aggregated or seperated.
@@ -228,64 +288,75 @@ class PostProcess:
     def align(self):
         self.align_parameters(self.postsamples, self.schema)
     
-    def to_arviz(self):
-        """Convert the aligned posterior samples into ArviZ InferenceData objects.
+    def to_array(self, concatenate_chains: bool = False) -> dict[tuple[int, ...], np.array]:
+        """Convert self.postsamples into np.array for each combination of dimensions.
         
+        Parameters
+        ----------
+        concatenate_chains : bool, optional
+            The default is False.
+    
         Returns
         -------
-        dict of az.InferenceData
-            A dictionary where keys are the number of flares (K) and values 
-            are the corresponding InferenceData objects.
+        sample_arrays_by_dims : dict[tuple[int, ...], np.array]
+            The keys are combinations of dimensions.
+            The values are posterior samples arrays of which shape is
+            (samples, params) if concatenate_chains == True or
+            (chains, draws, params) if concatenate_chains == False.
+        sample_array_schema : list[list[str]]
+            [["{space}.n_dimensions", ...], ["{space}.{param}", ...]].   
         """
         df = self.postsamples
         schema = self.schema
         
-        # ArviZ expects fixed dimensions, so we group by flare counts (K)
-        # Using the first dimension column as a primary key for trans-dimensional grouping
-        dim_col = schema.loc[schema["cat"] == "dim", "col_name"].iloc[0]
+        dim_col_names = schema.loc[schema["cat"]=="dim", "col_name"].tolist()  # "{space}.n_dimensions"
+        param_col_names = schema.loc[schema["cat"].isin(["trans", "fixed"]), "col_name"].tolist()  # "{space}.{param}"
         
-        inf_data_dict = {}
+        sample_array_schema = [dim_col_names, param_col_names]
+        sample_arrays_by_dims = {}
         
-        # 1. Group by the number of flares (K)
-        for k, group in df.groupby(dim_col):
-            if k == 0: continue
-            
-            posterior_dict = {}
-            
-            # 2. Iterate through each chain to reconstruct (chain, draw, ...) structure
-            unique_chains = group["chain"].unique()
-            
-            # Identify variables to include in posterior
-            # We include 'trans' parameters for this space and all 'fixed' parameters
-            target_cols = schema.loc[schema["cat"].isin(["trans", "fixed"]), "col_name"].tolist()
-            
-            for col in target_cols:
-                chain_samples = []
-                for c_id in unique_chains:
-                    # Extract samples for specific chain and K
-                    c_group = group[group["chain"] == c_id]
-                    
-                    # Stack the 1D arrays/lists stored in cells into a 2D array (draw, K) or (draw, 1)
-                    # If it's a fixed scalar, np.stack will handle it. 
-                    # If it's a list/array of length K, it becomes (draw, K).
-                    samples = np.stack(c_group[col].to_numpy())
-                    chain_samples.append(samples)
+        if concatenate_chains:
+            for dims, group in df.groupby(dim_col_names):
+                param_cols = [np.stack(group[param].to_numpy()) for param in param_col_names]
+                sample_arrays_by_dims[dims] = np.concatenate(param_cols, axis=1)  # Shape: (sampls, params)
+        
+        # If not concatenating chains, trimming samples for each chain homogeneously.
+        else:
+            for dims, group in df.groupby(dim_col_names):
+                group = group.sort_values("chain_id")
+                chain_ids = group["chain_id"].to_numpy()
+                # Find all chain IDs and their sample (draw) numbers
+                unique_chain_ids, chain_id_counts = np.unique(chain_ids, return_counts=True)
+                # The minimum draw number of chains among all chain IDs
+                min_draw = np.min(chain_id_counts)
                 
-                # ArviZ shape: (chain, draw, *dims)
-                # data_array shape: (len(unique_chains), draws_per_chain, K or 1)
-                data_array = np.stack(chain_samples)
+                if all(chain_id_counts == min_draw):
+                    is_homogeneous = True
+                else:
+                    is_homogeneous = False
+                    # e.g., [0 1 2 3 0 1 2 0 1 2 3 4 ...] when chain_id_counts == [4 3 5 ...]
+                    chain_counting = np.concatenate([np.arange(count) for count in chain_id_counts])
+                    # Masking False where counting exceeds the minimum
+                    chain_mask = chain_counting < min_draw
                 
-                # Clean up the variable name (e.g., 'flare.t0' -> 't0')
-                var_name = schema.loc[schema["col_name"] == col, "attr"].iloc[0]
-                posterior_dict[var_name] = data_array
+                param_cols = [
+                    np.stack(group[param].to_numpy()) if is_homogeneous else 
+                    np.stack(group[param].to_numpy()[chain_mask])
+                    for param in param_col_names
+                ]
+                param_array = np.concatenate(param_cols, axis=1)  # Shape: (samples, params)
+                
+                sample_arrays_by_dims[dims] = param_array.reshape(len(unique_chain_ids), min_draw, -1)  # Shape: (chains, draws, params)
+        
+        return sample_arrays_by_dims, sample_array_schema
     
-            # 3. Create InferenceData object for this specific K
-            inf_data_dict[k] = az.from_dict(posterior=posterior_dict)
-            print(f"ArviZ InferenceData for K={k} created with {len(unique_chains)} chains.")
+    def by_arviz_for_dim(self, array: np.array):
+        return None
     
-        return inf_data_dict
+    def by_arviz(self):
+        sample_array_schema, sample_arrays_by_dims = self.to_array(self.postsamples, False)
     
-    def to_gmm(self, samples, var_threshold: float = 0.95, init_method="index"):
+    def by_gmm_for_dim(self, samples, var_threshold: float = 0.95, init_method="index"):
         """Robust pipeline for high-dimensional posterior analysis.
         
         Handles extremely small sample sizes and non-linear manifolds.
@@ -418,4 +489,7 @@ class PostProcess:
             })
     
         return results
+    
+    def by_gmm(self):
+        return None
     
