@@ -14,7 +14,7 @@ data_path = Path.home() / "Dropbox/workspace/paper/Kang2026-sub/analysis/bu.txt"
 data = np.loadtxt(data_path, comments="#")
 
 # Data save path
-save_dir = Path.home() / "Dropbox/workspace/paper/Kang2026-sub/analysis/bu/test2"
+save_dir = Path.home() / "Dropbox/workspace/paper/Kang2026-sub/analysis/bu/test4"
 save_dir.mkdir(parents=True, exist_ok=True)
 
 # ================================
@@ -22,15 +22,15 @@ save_dir.mkdir(parents=True, exist_ok=True)
 # ++++++++++++++++++++++++++++++++
 
 # The limit number of model components
-n_dim_min = 10
-n_dim_max = 10
+n_dim_min = 1
+n_dim_max = 20
 
 # The final number of posterior samples is
 # (The number of T=1 chains) * (n_iterations - brunin_iterations) / save_every.
-n_chains = 8
-n_iterations = 100000
-burnin_iterations = 100
-save_every = 100
+n_chains = 4
+n_iterations = 15000
+burnin_iterations = 5000
+save_every = 10
 verbose = False
 print_every = 1000
 
@@ -173,6 +173,8 @@ inversion.run(
 
 postsamples, acceptances = orginize_results(inversion, save_dir, sort_refs)
 post_process = PostProcess(postsamples)
+
+arviz_results = post_process.by_arviz(save_dir)
 
 '''
 # ================================
