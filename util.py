@@ -103,6 +103,10 @@ def align_parameters(
     trans_space_names = schema.loc[schema["cat"]=="dim", "field"].tolist()
     dim_col_names = schema.loc[schema["cat"]=="dim", "col_name"].tolist()
     
+    # No trans-dimensional spaces
+    if not dim_col_names:
+        return df
+    
     # Loop for each parameter space
     for space, dim_col in zip(trans_space_names, dim_col_names):
         param_mask = (schema["field"] == space) & (schema["cat"] == "trans")
@@ -287,7 +291,8 @@ class PostProcess:
         self.schema = get_column_schema(self.postsamples)
 
     def align(self):
-        self.align_parameters(self.postsamples, self.schema)
+        """Hungarian matching to solve the label-switching problem."""
+        self.postsamples = align_parameters(self.postsamples, self.schema)
     
     def to_array(self, stack_chains, concat_params, to_3d) -> (dict[tuple[int, ...], np.ndarray], list[list[str]]):
         """Convert self.postsamples into np.ndarray for each combination of dimensions.
@@ -319,9 +324,9 @@ class PostProcess:
         Examples
         --------
         if stack_chains == True and concat_params == True:
-            sample_arrays_by_dims = {(dims,): array(draws, samples, all params)}.
+            sample_arrays_by_dims = {(dims,): array(chains, draws, all params)}.
         if stack_chains == True and concat_params == False:
-            sample_arrays_by_dims = {(dims,): {param: array(draws, samples, param)}}.
+            sample_arrays_by_dims = {(dims,): {param: array(chains, draws, param)}}.
         if stack_chains == False and concat_params == True:
             sample_arrays_by_dims = {(dims,): array(samples, all params)}.
         if stack_chains == False and concat_params == False:
@@ -336,7 +341,7 @@ class PostProcess:
         sample_array_schema = [dim_col_names, param_col_names]
         sample_arrays_by_dims = {}
         
-        # If stacking chains with inhomogeneous draws, trimming samples for each chain.
+        # If stacking chains have inhomogeneous draws, triming samples for each chain to be homogeneous.
         if stack_chains:
             for dims, group in df.groupby(dim_col_names):
                 group = group.sort_values("chain_id")
@@ -346,47 +351,41 @@ class PostProcess:
                 # The minimum draw number of chains among all chain IDs
                 min_draw = np.min(chain_id_counts)
                 
-                if all(chain_id_counts == min_draw):
-                    is_homogeneous = True
-                else:
-                    is_homogeneous = False
-                    # Counting each chain ID in descending order to trim front draws
-                    # e.g., [3 2 1 0 2 1 0 4 3 2 1 0 ...] when chain_id_counts == [4 3 5 ...]
-                    descending_counter = np.concatenate([np.arange(count)[::-1] for count in chain_id_counts])
-                    # Masking False where descending counting exceeds the minimum
-                    chain_mask = descending_counter < min_draw
+                # Counting each chain ID in descending order to trim front draws
+                # e.g., [3 2 1 0 2 1 0 4 3 2 1 0 ...] when chain_id_counts == [4 3 5 ...]
+                descending_counter = np.concatenate([np.arange(count)[::-1] for count in chain_id_counts])
+                # Masking False where descending counting exceeds the minimum
+                chain_mask = descending_counter < min_draw
                 
                 if concat_params:
-                    param_cols = [
-                        np.stack(group[param].to_numpy()) if is_homogeneous else 
-                        np.stack(group[param].to_numpy()[chain_mask])
-                        for param in param_col_names
-                    ]  # Shape: [(samples, param)]
-                    param_array = np.concatenate(param_cols, axis=1)  # Shape: (samples, all params)
-                    sample_arrays_by_dims[dims] = param_array.reshape(len(unique_chain_ids), min_draw, -1)  # Shape: (chains, draws, all params)
+                    param_arrays = np.concatenate(
+                        [np.stack(group[param].to_numpy()[chain_mask]) for param in param_col_names],  # Shape: [(samples, param)]
+                        axis=1,
+                    )  # Shape: (samples, all params)
+                    param_arrays = param_arrays.reshape(len(unique_chain_ids), min_draw, -1)  # Shape: (chains, draws, all params)
                 else:
-                    param_cols = {}
-                    for param in param_col_names:
-                        param_cols[param] = (
-                            np.stack(group[param].to_numpy()) if is_homogeneous else 
-                            np.stack(group[param].to_numpy()[chain_mask])  # Shape: (samples, param)
-                        ).reshape(len(unique_chain_ids), min_draw, -1)  # Shape: (chains, draws, param)
-                    sample_arrays_by_dims[dims] = param_cols  # Shape: {param: (chains, draws, param)}
+                    param_arrays = {
+                        param: np.stack(group[param].to_numpy()[chain_mask]).reshape(len(unique_chain_ids), min_draw, -1)  # Shape: (chains, draws, param)
+                        for param in param_col_names
+                    }  # Shape: {param: (chains, draws, param)}
+                sample_arrays_by_dims[dims] = param_arrays
         
         else:
             for dims, group in df.groupby(dim_col_names):
                 if concat_params:
-                    param_cols = [np.stack(group[param].to_numpy()) for param in param_col_names]  # Shape: (samples, param)
-                    sample_arrays_by_dims[dims] = np.concatenate(param_cols, axis=1)  # Shape: (sampls, all params)
+                    param_arrays = np.concatenate(
+                        [np.stack(group[param].to_numpy()) for param in param_col_names],  # Shape: [(samples, param)]
+                        axis=1,
+                    )  # Shape: (sampls, all params)
                 else:
-                    param_cols = {param: np.stack(group[param].to_numpy()) for param in param_col_names}
-                    sample_arrays_by_dims[dims] = param_cols  # Shape: {param: (samples, param)}
+                    param_arrays = {param: np.stack(group[param].to_numpy()) for param in param_col_names}  # Shape: {param: (samples, param)}
+                sample_arrays_by_dims[dims] = param_arrays
         
-        # Make arrays 3d. This is for compatibility to arviz.
         # Make the shape {(dims,): array(1, samples, all params)}.
         if to_3d and (not stack_chains) and concat_params:
             for key, val in sample_arrays_by_dims.items():
                 sample_arrays_by_dims[key] = val[np.newaxis, ...]
+                
         # Make the shape {(dims,): {param: array(1, samples, param)}}
         if to_3d and (not stack_chains) and (not concat_params):
             for dim_key, in_dict in sample_arrays_by_dims.items():
@@ -396,7 +395,9 @@ class PostProcess:
         return sample_arrays_by_dims, sample_array_schema
     
     def by_arviz(self, save_dir):
-        samples_by_dims, sample_schema = self.to_array(True, False, True)
+        samples_by_dims, sample_schema = self.to_array(
+            stack_chains=True, concat_params=False, to_3d=True
+        )
 
         results = {}
         for dims, samples in samples_by_dims.items():
@@ -407,15 +408,28 @@ class PostProcess:
             arviz_save_dir.mkdir(parents=True, exist_ok=True)
             
             for dims, idata in results.items():
-                # Save by nc (hdf5)
-                nc_save_path = arviz_save_dir / f"arviz_dim{dims}.nc"
-                idata.to_netcdf(str(nc_save_path))
+                # Save results by nc (hdf5)
+                results_save_path = arviz_save_dir / f"results_dim{dims}.nc"
+                idata.to_netcdf(str(results_save_path))
                 
-                # Save by csv
-                summary_df = az.summary(idata)
-                csv_save_path = arviz_save_dir / f"arviz_dim{dims}.csv"
-                summary_df.to_csv(str(csv_save_path))
-            
+                # Save summaries by csv
+                summary_save_path = arviz_save_dir / f"summary_dim{dims}.csv"
+                summary_df = az.summary(idata, ci_kind="hdi", round_to="none")
+                summary_df.to_csv(str(summary_save_path))
+                
+                # Save posterior and trace plots
+                post_plot_save_dir = arviz_save_dir / f"post_plot_dim{dims}"
+                post_plot_save_dir.mkdir(parents=True, exist_ok=True)
+                trace_plot_save_dir = arviz_save_dir / f"trace_plot_dim{dims}"
+                trace_plot_save_dir.mkdir(parents=True, exist_ok=True)
+                for param in sample_schema[1]:
+                    post_plot_save_path = post_plot_save_dir / f"{param}.png"
+                    post = az.plot_dist(idata, var_names=param)
+                    post.savefig(str(post_plot_save_path))
+                    trace_plot_save_path = trace_plot_save_dir / f"{param}.png"
+                    trace = az.plot_trace(idata, var_names=param)
+                    trace.savefig(str(trace_plot_save_path))
+                
         return results
     
     def by_gmm_for_dim(self, samples, var_threshold: float = 0.95, init_method="index"):
@@ -553,5 +567,11 @@ class PostProcess:
         return results
     
     def by_gmm(self):
+        return None
+    
+    def get_results(self, save_dir, by: str = "both"):
+        
+        save_dir = Path(save_dir)
+        
         return None
     

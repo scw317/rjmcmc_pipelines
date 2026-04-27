@@ -22,17 +22,17 @@ save_dir.mkdir(parents=True, exist_ok=True)
 # ++++++++++++++++++++++++++++++++
 
 # The limit number of model components
-n_dim_min = 1
-n_dim_max = 20
+n_dim_min = 15
+n_dim_max = 15
 
 # The final number of posterior samples is
 # (The number of T=1 chains) * (n_iterations - brunin_iterations) / save_every.
 n_chains = 4
-n_iterations = 15000
-burnin_iterations = 5000
-save_every = 10
-verbose = False
-print_every = 1000
+n_iterations = 3000000
+burnin_iterations = 1000000
+save_every = 1000
+verbose = True
+print_every = 500000
 
 # ================================
 # %% Parameters preset
@@ -78,7 +78,7 @@ for name, lim in zip(trans_param_names, trans_param_limits):
         name=name,
         vmin=lim[0],
         vmax=lim[1],
-        perturb_std=(lim[1] - lim[0])*rel_std,
+        perturb_std=(lim[1] - lim[0]) * rel_std,
     )
     trans_priors.append(prior)
 
@@ -88,7 +88,7 @@ for name, lim in zip(fixed_param_names, fixed_param_limits):
         name=name,
         vmin=lim[0],
         vmax=lim[1],
-        perturb_std=(lim[1] - lim[0])*rel_std,
+        perturb_std=(lim[1] - lim[0]) * rel_std,
     )
     fixed_priors.append(prior)
 
@@ -98,9 +98,9 @@ for name, lim in zip(fixed_param_names, fixed_param_limits):
 
 trans_space = bb.parameterization.ParameterSpace(
     name=trans_space_name,
-    n_dimensions=None,
-    n_dimensions_min=n_dim_min,
-    n_dimensions_max=n_dim_max,
+    n_dimensions=15,
+    #n_dimensions_min=n_dim_min,
+    #n_dimensions_max=n_dim_max,
     parameters=trans_priors,
 )
 
