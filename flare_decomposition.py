@@ -14,7 +14,7 @@ data_path = Path.home() / "Dropbox/workspace/paper/Kang2026-sub/analysis/bu.txt"
 data = np.loadtxt(data_path, comments="#")
 
 # Data save path
-save_dir = Path.home() / "Dropbox/workspace/paper/Kang2026-sub/analysis/bu/test5"
+save_dir = Path.home() / "Dropbox/workspace/paper/Kang2026-sub/analysis/bu/test10"
 save_dir.mkdir(parents=True, exist_ok=True)
 
 # ================================
@@ -23,14 +23,14 @@ save_dir.mkdir(parents=True, exist_ok=True)
 
 # The limit number of model components
 n_dim_min = 1
-n_dim_max = 20
+n_dim_max = 30
 
 # The final number of posterior samples is
 # (The number of T=1 chains) * (n_iterations - brunin_iterations) / save_every.
-n_chains = 8
-n_iterations = 1000000
-burnin_iterations = 500000
-save_every = 100
+n_chains = 16
+n_iterations = 5000000
+burnin_iterations = 2000000
+save_every = 1000
 verbose = True
 print_every = 100000
 sampler = bb.samplers.ParallelTempering(swap_every=100000)
@@ -172,15 +172,18 @@ inversion.run(
     print_every=print_every,
 )
 
-postsamples, acceptances, temperatures = orginize_results(inversion, save_dir, sort_refs)
+postsamples, acceptances, temperatures = orginize_results(inversion, sort_refs, save_dir)
 
-post_process = PostProcess(postsamples)
-arviz_results = post_process.by_arviz(save_dir)
+post_process = PostProcess(postsamples, True, save_dir)
+dim_mode_df = post_process.est_dims()
+arviz_results = post_process.by_arviz()
 
 '''
 # ================================
 # %% Plot model
 # ++++++++++++++++++++++++++++++++
+
+data_path = save_dir / 
 
 plot_data = np.linspace(data[:, 0].min(), data[:, 0].max(), 1000)
 

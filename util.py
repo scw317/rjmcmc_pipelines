@@ -3,6 +3,7 @@ from pathlib import Path
 
 import arviz as az
 import bayesbay as bb
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from scipy.optimize import linear_sum_assignment
@@ -203,19 +204,18 @@ def align_parameters(
 
 def orginize_results(
         inversion: bb.BayesianInversion,
-        save_dir: Path | str | None = None,
         sort_refs: list[str] | None = None,
+        save_dir: Path | str = "./results",
     ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Organize sampling results and acceptance statistics.
     
     Parameters
     ----------
     inversion : bb.BayesianInversion
-    save_dir : Path | str | None, optional
-        Save directory path. If it is None, returns are not saved.
-        The default is None.
     sort_refs: list[str] | None = None,
         Sorting reference parmaters for each trans-dimensional space.
+    save_dir : Path | str, optional
+        Save directory path. The default is './results'.
         
     Retruns
     -------
@@ -285,12 +285,9 @@ def orginize_results(
     
     if save_dir:
         save_dir.mkdir(parents=True, exist_ok=True)
-        postsample_save_path = get_unique_path(Path(save_dir) / "postamples.parquet")
-        postsamples.to_parquet(path=str(postsample_save_path), engine="pyarrow", compression="zstd")
-        acceptance_save_path = get_unique_path(Path(save_dir) / "acceptances.csv")
-        acceptances.to_csv(str(acceptance_save_path))
-        temperature_save_path = get_unique_path(Path(save_dir) / "temperatures.csv")
-        temperatures.to_csv(str(temperature_save_path))
+        postsamples.to_parquet(str(get_unique_path(Path(save_dir) / "postamples.parquet")), engine="pyarrow", compression="zstd")
+        acceptances.to_csv(str(get_unique_path(Path(save_dir) / "acceptances.csv")))
+        temperatures.to_csv(str(get_unique_path(Path(save_dir) / "temperatures.csv")))
     
     return postsamples, acceptances, temperatures
 
@@ -302,7 +299,7 @@ class PostProcess:
     however, the BayesBay library is not needed explicitly.
     """
     
-    def __init__(self, postsamples: pd.DataFrame, concatenate_chains: bool = True):
+    def __init__(self, postsamples: pd.DataFrame, concatenate_chains: bool = True, save_dir: Path | str = "./results"):
         """
         Parameters
         ----------
@@ -313,11 +310,16 @@ class PostProcess:
         concatenate_chains : bool, optional
             The same parameter as bb.BayesianInversion.get_results. The default is True.
             Decide whether samples from all chains in 'postsamples' are aggregated or seperated.
+        save_dir : Path | str, optional
+            Save directory path. The default is './results'.
             
         Returns
         -------
-        None.
+        None
         """
+        self.save_dir = Path(save_dir)
+        self.save_dir.mkdir(parents=True, exist_ok=True)
+        
         if concatenate_chains:
             if "chain_id" in postsamples.columns:
                 self.postsamples = postsamples
@@ -455,41 +457,90 @@ class PostProcess:
         
         return sample_arrays_by_dims, sample_array_schema
     
-    def by_arviz(self, save_dir):
+    def est_dims(self):
+        dim_col_names = self.schema.loc[self.schema["cat"]=="dim", "col_name"].tolist()
+        dim_cols = self.postsamples[dim_col_names].to_numpy()  # Shape: (samples, spaces)
+        
+        # Dimensions bins edges for each space
+        bins_edges = [
+            np.arange(np.min(col), np.max(col) + 2) - 0.5
+            for col in dim_cols.T
+        ]
+        # Multi-dimensional histogram to get joint mode of dimensions
+        hists, edges = np.histogramdd(dim_cols, bins=bins_edges)
+        # The index in hists which is the mode
+        joint_argmax = np.unravel_index(np.argmax(hists), hists.shape)
+        
+        # All space dimensions dataframe including joint and marginal modes 
+        dim_mode_dict = {"kind": ["joint", "marginal"]}
+        for d, arg in enumerate(joint_argmax):
+            dim_mode_dict[dim_col_names[d]] = [(edges[d][arg] + edges[d][arg + 1]) / 2]
+        
+        # Dimensions for each space
+        for d, dim in enumerate(dim_cols.T):
+            uniques, counts = np.unique(dim, return_counts=True)
+            
+            # Dimensions histogram
+            fig, ax = plt.subplots()
+            ax.hist(dim, bins=bins_edges[d])
+            ax.set_xlabel(dim_col_names[d])
+            plt.show()
+            fig.savefig(str(get_unique_path(self.save_dir / f"{dim_col_names[d]}.png")))
+            plt.close(fig)
+            
+            # Dimension distribution dataframe
+            dim_df = pd.DataFrame({"dim": uniques, "count": counts})
+            dim_df.to_csv(str(get_unique_path(self.save_dir / f"{dim_col_names[d]}.csv")))
+            
+            # Update the marginal mode to the all space dimensions dataframe
+            dim_mode_dict[dim_col_names[d]].append(uniques[np.argmax(counts)])
+        
+        dim_mode_df = pd.DataFrame(dim_mode_dict)
+        dim_mode_df.to_csv(str(get_unique_path(self.save_dir / "dim_mode.csv")))
+        
+        return dim_mode_df
+                        
+    def by_arviz(self, stack_chains: bool = True):
+        """Get estimates by arviz library."""
         samples_by_dims, sample_schema = self.to_array(
-            stack_chains=True, concat_params=False, to_3d=True
+            stack_chains=stack_chains, concat_params=False, to_3d=True
         )
-
+        
         results = {}
         for dims, samples in samples_by_dims.items():
             results[dims] = az.from_dict({"posterior": samples})
         
-        if save_dir:
-            arviz_save_dir = get_unique_path(Path(save_dir) / "arviz")
-            arviz_save_dir.mkdir(parents=True, exist_ok=True)
+        arviz_save_dir = get_unique_path(self.save_dir / "arviz")
+        arviz_save_dir.mkdir(parents=True, exist_ok=True)
+        
+        for dims, idata in results.items():
+            # Save results by nc (hdf5)
+            idata.to_netcdf(str(arviz_save_dir / f"results_dim{dims}.nc"))
             
-            for dims, idata in results.items():
-                # Save results by nc (hdf5)
-                results_save_path = arviz_save_dir / f"results_dim{dims}.nc"
-                idata.to_netcdf(str(results_save_path))
-                
-                # Save summaries by csv
-                summary_save_path = arviz_save_dir / f"summary_dim{dims}.csv"
-                summary_df = az.summary(idata, ci_kind="hdi", round_to="none")
-                summary_df.to_csv(str(summary_save_path))
-                
-                # Save posterior and trace plots
-                post_plot_save_dir = arviz_save_dir / f"post_plot_dim{dims}"
-                post_plot_save_dir.mkdir(parents=True, exist_ok=True)
-                trace_plot_save_dir = arviz_save_dir / f"trace_plot_dim{dims}"
-                trace_plot_save_dir.mkdir(parents=True, exist_ok=True)
-                for param in list(idata.posterior.data_vars):
-                    post_plot_save_path = post_plot_save_dir / f"{param}.png"
-                    post = az.plot_dist(idata, var_names=param)
-                    post.savefig(str(post_plot_save_path))
-                    trace_plot_save_path = trace_plot_save_dir / f"{param}.png"
-                    trace = az.plot_trace(idata, var_names=param)
-                    trace.savefig(str(trace_plot_save_path))
+            # Mean and median estimates summary dataframe
+            mean_summary_df = az.summary(idata, kind="all", round_to="none")
+            median_summary_df = az.summary(idata, kind="all_median", round_to="none")
+            # Mode estimates
+            mode_dataset = az.mode(idata, round_to="none").to_dataset()
+            mode_series = pd.Series(
+                np.concatenate([mode_dataset[var].values.flatten() for var in mode_dataset.data_vars]),
+                name="mode", index=mean_summary_df.index
+            )
+            # Save concatenated summary with mean, median, and mode by csv
+            summary_df = pd.concat((mean_summary_df, median_summary_df, mode_series), axis=1)
+            summary_df.to_csv(str(arviz_save_dir / f"summary_dim{dims}.csv"))
+            
+            # Save posterior, trace, and autocorrelation plots
+            post_plot_save_dir = arviz_save_dir / f"post_plot_dim{dims}"
+            post_plot_save_dir.mkdir(parents=True, exist_ok=True)
+            trace_plot_save_dir = arviz_save_dir / f"trace_plot_dim{dims}"
+            trace_plot_save_dir.mkdir(parents=True, exist_ok=True)
+            autocorr_plot_save_dir = arviz_save_dir / f"autocorr_plot_dim{dims}"
+            autocorr_plot_save_dir.mkdir(parents=True, exist_ok=True)
+            for param in list(idata.posterior.data_vars):
+                az.plot_dist(idata, var_names=param).savefig(str(post_plot_save_dir / f"{param}.png"))
+                az.plot_trace(idata, var_names=param).savefig(str(trace_plot_save_dir / f"{param}.png"))
+                az.plot_autocorr(idata, var_names=param).savefig(str(autocorr_plot_save_dir / f"{param}.png"))
                 
         return results
     
