@@ -7,6 +7,7 @@ import numpy as np
 import pandas as pd
 from scipy.optimize import linear_sum_assignment
 from scipy.spatial.distance import cdist
+from scipy.stats import median_abs_deviation
 from sklearn.cluster import HDBSCAN
 from sklearn.decomposition import PCA
 from sklearn.mixture import GaussianMixture
@@ -78,53 +79,56 @@ def get_column_schema(postsamples: pd.DataFrame) -> pd.DataFrame:
 def sort_and_match_array(
         array: np.ndarray,
         ref_idx: int | None = None,
-        match: bool = True,
+        do_match: bool = True,
         ) -> np.ndarray:
-    """Sort by a specific parameter and match sample by sample.
-    
-    Use Hungarian matching based on standardized-Euclidean metric.
+    """Sorting and Hungarian matching.
+
+    The sorting is performed along the axis=1 refered by one index in axis=2.
+    The Hungarian matching is based on standardized Euclidean metric.
 
     Parameters
     ----------
     array : np.ndarray
-        Shape: (samples, dimensions, params) == (N, K, P).
+        Shape: (N, K, P).
     ref_idx : int | None, optional
-        A sorting reference index. The default is None.
-    match : bool, optional
-        Do match or not. The default is True.
+        The sorting reference index of axis=2. The default is None.
+    do_match : bool, optional
+        Determine to do matching or not. The default is True.
 
     Returns
     -------
     aligned_array : np.ndarray
         Sorted and matched.
     """
-    # Sort along a dimension axis (axis=1) by a specific parameter (ref_idx in axis=2)
+    # Sort along axis=1 by ref_idx in axis=2
     if ref_idx is not None:
         sort_idxs = np.argsort(array[..., ref_idx], axis=1)  # Shape: (N, K)
         array = np.take_along_axis(array, sort_idxs[..., np.newaxis], axis=1)
     
-    if not match:
+    if not do_match:
         return array
 
-    # Calculate variance for "seuclidean" metric for each parameter
-    variances = np.var(array, axis=(0, 1))  # Shape: (P,)
+    # Calculate the effective variance for each index in axis=2. Shape: (P,)
+    variances = (1.4826 * np.median(median_abs_deviation(array, axis=0), axis=0))**2
+    #variances = np.median(np.var(array, axis=0), axis=0)  # Not bad 
+    #variances = np.var(array, axis=(0, 1))  # Very unstable
     variances[variances == 0] = 1.0  # Avoid division by zero
     
-    aligned_array = np.zeros_like(array)
-    aligned_array[-1] = np.mean(array, axis=0)  # Last is reference to calculate metric.
+    # Reference for metric caluclation
+    reference = array[-1]
     
-    # Perform Hungarian matching for each sample
-    for i in range(array.shape[0] - 1):
-        current_sample = array[i]  # Shape: (K, P)
-        
-        # Compute cost with standardized Euclidean distance refered by the last sample
-        cost_matrix = cdist(aligned_array[-1], current_sample, metric="seuclidean", V=variances)
+    aligned_array = np.zeros_like(array)
+    
+    # Perform Hungarian matching for each indexed array in axis=0
+    for i in range(array.shape[0]):
+        # Compute cost with standardized Euclidean metric between i-th array and reference
+        cost_matrix = cdist(array[i], reference, metric="seuclidean", V=variances)
         
         # Solve optimal assignment
-        _, col_idx = linear_sum_assignment(cost_matrix)
+        row_dix, col_idx = linear_sum_assignment(cost_matrix)
 
-        # Record the aligned current sample
-        aligned_array[i] = current_sample[col_idx]
+        # Record the aligned i-th array
+        aligned_array[i] = array[i][col_idx]
     
     return aligned_array
 
@@ -150,13 +154,10 @@ def align_parameters(
     df : pd.DataFrame
         Aligned.
     """
-    df = postsamples
+    df = postsamples  # Shallow copy
 
-    # Categories definition ("trans" or "fixed", is "trans")
-    categories = [("trans", True), ("fixed", False)]
-    
-    for cat, is_trans in categories:
-        if is_trans:
+    for cat in ["trans", "fixed"]:
+        if cat == "trans":
             space_groups = schema.loc[schema["cat"]=="dim", ["field", "col_name"]].values
         else:
             fields = np.unique(schema.loc[schema["cat"]=="fixed", "field"])
@@ -177,14 +178,14 @@ def align_parameters(
                         ref_idx = i
                         break
 
-            # Groups by dimensions for trans-dimensional and total dataframe for fixed-dimensional
-            groups = df.groupby(dim_col) if is_trans else [("fixed", df)]
+            # Group by dimensions for trans-dimensional or use total dataframe for fixed-dimensional
+            groups = df.groupby(dim_col) if cat == "trans" else [("fixed", df)]
             
             for _, group in groups:
                 if len(group) == 0:
                     continue
                 
-                # Shape: (samples, dimensions, params) == (N, K, P)
+                # Shape: (samples, dimensions, parameters) == (N, K, P)
                 data_array = np.stack(
                     [np.stack(group[param].to_numpy()) for param in param_col_names],
                     axis=-1,
@@ -194,9 +195,8 @@ def align_parameters(
 
                 # Write back to the original dataframe in-place
                 for p, param in enumerate(param_col_names):
-                    df.loc[group.index, param] = pd.Series(
-                        list(aligned_array[..., p]), index=group.index
-                    )
+                    aligned_series = pd.Series(list(aligned_array[..., p]), index=group.index)
+                    df.loc[group.index, param] = aligned_series
 
     return df
 
@@ -223,13 +223,19 @@ def orginize_results(
         Posterior samples.
     acceptances : pd.DataFrame
         The numbers of proposed and accepted samples and their ratio.
+    temperatures : pd.DataFrame
+        Temperatures of chains
     """
     markov_chains = inversion.chains  #  bb.MarkovChain instance
     
-    # Get acceptance statistics and posterior samples from markov_chains
+    # Get temperatures, acceptance statistics and posterior samples from markov_chains
+    temperature_dict = {"chain_id": [], "temperature": []}
     acceptance_list = []
     postsample_list = []
     for chain in markov_chains:
+        temperature_dict["chain_id"].append(chain.id)
+        temperature_dict["temperature"].append(chain.temperature)
+        
         # Acceptance statistics
         stats = chain.statistics
         
@@ -254,19 +260,22 @@ def orginize_results(
         acceptance_df = pd.DataFrame((proposed_dict, accepted_dict, ratio_dict))
         acceptance_list.append(acceptance_df)
         
-        # Posterior samples
-        postsample_df = pd.DataFrame(inversion.get_results_from_chains(chain))
+        # Posterior samples.
+        # Note that non unity temperature chains do not have posterior samples.
+        if inversion.get_results_from_chains(chain):
+            postsample_df = pd.DataFrame(inversion.get_results_from_chains(chain))
+            
+            # Add the acceptance ratio column
+            acceptance_ratio_col = pd.Series(np.full(len(postsample_df), ratio_dict["total"]), name="acceptance_ratio")
+            postsample_df = pd.concat((acceptance_ratio_col, postsample_df), axis=1)
+            
+            # Add the chain ID column
+            chain_id_col = pd.Series(np.full(len(postsample_df), chain.id), name="chain_id")
+            postsample_df = pd.concat((chain_id_col, postsample_df), axis=1)
+            
+            postsample_list.append(postsample_df)   
         
-        # Add the acceptance ratio column
-        acceptance_ratio_col = pd.Series(np.full(len(postsample_df), ratio_dict["total"]), name="acceptance_ratio")
-        postsample_df = pd.concat((acceptance_ratio_col, postsample_df), axis=1)
-        
-        # Add the chain ID column
-        chain_id_col = pd.Series(np.full(len(postsample_df), chain.id), name="chain_id")
-        postsample_df = pd.concat((chain_id_col, postsample_df), axis=1)
-        
-        postsample_list.append(postsample_df)   
-        
+    temperatures = pd.DataFrame(temperature_dict)
     acceptances = pd.concat(acceptance_list, ignore_index=True)
     postsamples = pd.concat(postsample_list, ignore_index=True)
     
@@ -280,8 +289,10 @@ def orginize_results(
         postsamples.to_parquet(path=str(postsample_save_path), engine="pyarrow", compression="zstd")
         acceptance_save_path = get_unique_path(Path(save_dir) / "acceptances.csv")
         acceptances.to_csv(str(acceptance_save_path))
+        temperature_save_path = get_unique_path(Path(save_dir) / "temperatures.csv")
+        temperatures.to_csv(str(temperature_save_path))
     
-    return postsamples, acceptances
+    return postsamples, acceptances, temperatures
 
 
 class PostProcess:

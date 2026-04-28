@@ -23,16 +23,17 @@ save_dir.mkdir(parents=True, exist_ok=True)
 
 # The limit number of model components
 n_dim_min = 1
-n_dim_max = 30
+n_dim_max = 20
 
 # The final number of posterior samples is
 # (The number of T=1 chains) * (n_iterations - brunin_iterations) / save_every.
-n_chains = 16
-n_iterations = 5000000
-burnin_iterations = 2000000
-save_every = 1000
+n_chains = 8
+n_iterations = 1000000
+burnin_iterations = 500000
+save_every = 100
 verbose = True
-print_every = 1000000
+print_every = 100000
+sampler = bb.samplers.ParallelTempering(swap_every=100000)
 
 # ================================
 # %% Parameters preset
@@ -163,7 +164,7 @@ inversion = bb.BayesianInversion(
 )
 
 inversion.run(
-    sampler=bb.samplers.ParallelTempering(),
+    sampler=sampler,
     n_iterations=n_iterations,
     burnin_iterations=burnin_iterations,
     save_every=save_every,
@@ -171,7 +172,7 @@ inversion.run(
     print_every=print_every,
 )
 
-postsamples, acceptances = orginize_results(inversion, save_dir, sort_refs)
+postsamples, acceptances, temperatures = orginize_results(inversion, save_dir, sort_refs)
 
 post_process = PostProcess(postsamples)
 arviz_results = post_process.by_arviz(save_dir)
