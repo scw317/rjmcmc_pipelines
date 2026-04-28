@@ -75,14 +75,66 @@ def get_column_schema(postsamples: pd.DataFrame) -> pd.DataFrame:
     return schema
 
 
+def sort_and_match_array(
+        array: np.ndarray,
+        ref_idx: int | None = None,
+        match: bool = True,
+        ) -> np.ndarray:
+    """Sort by a specific parameter and match sample by sample.
+    
+    Use Hungarian matching based on standardized-Euclidean metric.
+
+    Parameters
+    ----------
+    array : np.ndarray
+        Shape: (samples, dimensions, params) == (N, K, P).
+    ref_idx : int | None, optional
+        A sorting reference index. The default is None.
+    match : bool, optional
+        Do match or not. The default is True.
+
+    Returns
+    -------
+    aligned_array : np.ndarray
+        Sorted and matched.
+    """
+    # Sort along a dimension axis (axis=1) by a specific parameter (ref_idx in axis=2)
+    if ref_idx is not None:
+        sort_idxs = np.argsort(array[..., ref_idx], axis=1)  # Shape: (N, K)
+        array = np.take_along_axis(array, sort_idxs[..., np.newaxis], axis=1)
+    
+    if not match:
+        return array
+
+    # Calculate variance for "seuclidean" metric for each parameter
+    variances = np.var(array, axis=(0, 1))  # Shape: (P,)
+    variances[variances == 0] = 1.0  # Avoid division by zero
+    
+    aligned_array = np.zeros_like(array)
+    aligned_array[-1] = np.mean(array, axis=0)  # Last is reference to calculate metric.
+    
+    # Perform Hungarian matching for each sample
+    for i in range(array.shape[0] - 1):
+        current_sample = array[i]  # Shape: (K, P)
+        
+        # Compute cost with standardized Euclidean distance refered by the last sample
+        cost_matrix = cdist(aligned_array[-1], current_sample, metric="seuclidean", V=variances)
+        
+        # Solve optimal assignment
+        _, col_idx = linear_sum_assignment(cost_matrix)
+
+        # Record the aligned current sample
+        aligned_array[i] = current_sample[col_idx]
+    
+    return aligned_array
+
+
 def align_parameters(
         postsamples: pd.DataFrame,
         schema: pd.DataFrame,
         sort_refs: list[str] | None = None,
         ) -> pd.DataFrame:
     """Align parameters to solve the label-switching problem.
-    
-    Hungarian matching based on standaradized-Euclidean metric.
     
     Parameters
     ----------
@@ -96,70 +148,56 @@ def align_parameters(
     Returns
     -------
     df : pd.DataFrame
+        Aligned.
     """
     df = postsamples
+
+    # Categories definition ("trans" or "fixed", is "trans")
+    categories = [("trans", True), ("fixed", False)]
     
-    # Trans-dimensional spaces and their dimension column names "{space}.n_dimensions"
-    trans_space_names = schema.loc[schema["cat"]=="dim", "field"].tolist()
-    dim_col_names = schema.loc[schema["cat"]=="dim", "col_name"].tolist()
-    
-    # No trans-dimensional spaces
-    if not dim_col_names:
-        return df
-    
-    # Loop for each parameter space
-    for space, dim_col in zip(trans_space_names, dim_col_names):
-        param_mask = (schema["field"] == space) & (schema["cat"] == "trans")
-        param_col_names = schema.loc[param_mask, "col_name"].tolist()  # "{space}.{param}" list
-        
-        if sort_refs is not None:
-            # Find a parameter name for sorting reference and its index in param_col_names
-            ref_info = [(r, ref) for r, ref in enumerate(sort_refs) if ref in param_col_names]
-            if ref_info:
-                ref_idx, ref_name = ref_info[0]
+    for cat, is_trans in categories:
+        if is_trans:
+            space_groups = schema.loc[schema["cat"]=="dim", ["field", "col_name"]].values
         else:
-            ref_info = None
-        
-        # Loop for each dimension
-        for dim, group in df.groupby(dim_col):
-            if len(group) == 0:
+            fields = np.unique(schema.loc[schema["cat"]=="fixed", "field"])
+            space_groups = [(f, None) for f in fields]  # No dim_col (None)
+
+        for space, dim_col in space_groups:
+            param_mask = (schema["field"] == space) & (schema["cat"] == cat)
+            param_col_names = schema.loc[param_mask, "col_name"].tolist()
+            
+            if not param_col_names:
                 continue
-            
-            # Homogeneous postsamples 3d array: (N, K, P) == (samples, dim, params)
-            data_array = np.stack(
-                [np.stack(group[param].to_numpy()) for param in param_col_names],
-                axis=-1,
-            )
 
-            # Sorting along a dimension axis (axis=1) for a specific parameter (ref_idx)
-            if ref_info:
-                sort_idxs = np.argsort(data_array[..., ref_idx], axis=1)
-                data_array = np.take_along_axis(data_array, sort_idxs[..., np.newaxis], axis=1)
+            # Extract ref_idx in param_col_names for sorting reference
+            ref_idx = None
+            if sort_refs:
+                for i, p_name in enumerate(param_col_names):
+                    if p_name in sort_refs:
+                        ref_idx = i
+                        break
 
-            # Calculate variance for "seuclidean" metric for each parameters
-            variances = np.var(data_array, axis=(0, 1))  # Shape: (P,)
-            variances[variances == 0] = 1.0  # Avoid division by zero
+            # Groups by dimensions for trans-dimensional and total dataframe for fixed-dimensional
+            groups = df.groupby(dim_col) if is_trans else [("fixed", df)]
             
-            aligned_array = np.zeros_like(data_array)
-            aligned_array[-1] = data_array[-1]  # Last is reference to calculate metric.
-            
-            # Perform Hungarian matching for each sample
-            for i in range(len(group) - 1):
-                current_sample = data_array[i]  # Shape: (K, P)
+            for _, group in groups:
+                if len(group) == 0:
+                    continue
                 
-                # Compute cost with standardized Euclidean distance refered by the last sample
-                cost_matrix = cdist(aligned_array[-1], current_sample, metric="seuclidean", V=variances)
+                # Shape: (samples, dimensions, params) == (N, K, P)
+                data_array = np.stack(
+                    [np.stack(group[param].to_numpy()) for param in param_col_names],
+                    axis=-1,
+                )
                 
-                # Solve optimal assignment
-                _, col_idx = linear_sum_assignment(cost_matrix)
-                
-                # Record the aligned current sample
-                aligned_array[i] = current_sample[col_idx]
-            
-            # Write back to the original dataframe in-place
-            for p, param in enumerate(param_col_names):
-                df.loc[group.index, param] = pd.Series(list(aligned_array[..., p]), index=group.index)
-    
+                aligned_array = sort_and_match_array(data_array, ref_idx)
+
+                # Write back to the original dataframe in-place
+                for p, param in enumerate(param_col_names):
+                    df.loc[group.index, param] = pd.Series(
+                        list(aligned_array[..., p]), index=group.index
+                    )
+
     return df
 
 
@@ -338,12 +376,19 @@ class PostProcess:
         dim_col_names = schema.loc[schema["cat"]=="dim", "col_name"].tolist()  # "{space}.n_dimensions"
         param_col_names = schema.loc[schema["cat"].isin(["trans", "fixed"]), "col_name"].tolist()  # "{space}.{param}"
         
+        # Group by dimensions if trans-dimensional spaces are exist.
+        # If not, the original dataframe is the only group itself.
+        groups = df.groupby(dim_col_names) if dim_col_names else [(None, df)]
+        
         sample_array_schema = [dim_col_names, param_col_names]
-        sample_arrays_by_dims = {}
+        sample_arrays_by_dims = {}  # {(dims,): array}
         
         # If stacking chains have inhomogeneous draws, triming samples for each chain to be homogeneous.
         if stack_chains:
-            for dims, group in df.groupby(dim_col_names):
+            for dims, group in groups:
+                if len(group) == 0:
+                    continue
+                
                 group = group.sort_values("chain_id")
                 chain_ids = group["chain_id"].to_numpy()
                 # Find all chain IDs and their sample (draw) numbers
@@ -363,6 +408,7 @@ class PostProcess:
                         axis=1,
                     )  # Shape: (samples, all params)
                     param_arrays = param_arrays.reshape(len(unique_chain_ids), min_draw, -1)  # Shape: (chains, draws, all params)
+                    
                 else:
                     param_arrays = {
                         param: np.stack(group[param].to_numpy()[chain_mask]).reshape(len(unique_chain_ids), min_draw, -1)  # Shape: (chains, draws, param)
@@ -371,12 +417,16 @@ class PostProcess:
                 sample_arrays_by_dims[dims] = param_arrays
         
         else:
-            for dims, group in df.groupby(dim_col_names):
+            for dims, group in groups:
+                if len(group) == 0:
+                    continue
+                
                 if concat_params:
                     param_arrays = np.concatenate(
                         [np.stack(group[param].to_numpy()) for param in param_col_names],  # Shape: [(samples, param)]
                         axis=1,
                     )  # Shape: (sampls, all params)
+                    
                 else:
                     param_arrays = {param: np.stack(group[param].to_numpy()) for param in param_col_names}  # Shape: {param: (samples, param)}
                 sample_arrays_by_dims[dims] = param_arrays
@@ -422,7 +472,7 @@ class PostProcess:
                 post_plot_save_dir.mkdir(parents=True, exist_ok=True)
                 trace_plot_save_dir = arviz_save_dir / f"trace_plot_dim{dims}"
                 trace_plot_save_dir.mkdir(parents=True, exist_ok=True)
-                for param in sample_schema[1]:
+                for param in list(idata.posterior.data_vars):
                     post_plot_save_path = post_plot_save_dir / f"{param}.png"
                     post = az.plot_dist(idata, var_names=param)
                     post.savefig(str(post_plot_save_path))
