@@ -15,10 +15,21 @@ from sklearn.mixture import GaussianMixture
 from umap import UMAP
 
 
-def get_unique_path(path: Path | str) -> Path:
-    """Generate a unique file path by appending an incrementing number if the file exists.
+def get_unique_path(path: Path | str, abort_count: int = 1000) -> Path:
+    """Get a unique path by appending an incrementing number if the file exists.
     
-    Format: {path}_{num}.{suffix}
+    Format: {path}_{num}.{suffix} but {suffix} is not necessary.
+    
+    Parameters
+    ----------
+    path : Path | str
+    abort_count : int, optional
+        Increment abort as reaching this. The default is 1000.
+    
+    Retruns
+    -------
+    new_path : Path
+        New path with incremented or random number.
     """
     path = Path(path)
     
@@ -30,14 +41,17 @@ def get_unique_path(path: Path | str) -> Path:
     stem = path.stem
     suffix = path.suffix
     
-    counter = 1
-    while True:
+    for counter in range(1, abort_count + 1):
         # Construct new path with incremented number
         new_path = parent / f"{stem}_{counter}{suffix}"
         if not new_path.exists():
             return new_path
-        counter += 1
-
+    
+    # Construct new path with random number when counter reach abort_count
+    counter = np.random.randint(abort_count + 1, 100 * abort_count)
+    new_path = parent / f"{stem}_{counter}{suffix}"
+    return new_path
+            
 
 def get_column_schema(postsamples: pd.DataFrame) -> pd.DataFrame:
     """Get column schema of the standard form of BayesBay posterior sample results.
@@ -220,11 +234,11 @@ def orginize_results(
     Retruns
     -------
     postsamples : pd.DataFrame
-        Posterior samples.
+        Posterior samples. Note that only T=1 chains have them.
     acceptances : pd.DataFrame
         The numbers of proposed and accepted samples and their ratio.
     temperatures : pd.DataFrame
-        Temperatures of chains
+        Temperatures (T) of chains
     """
     markov_chains = inversion.chains  #  bb.MarkovChain instance
     
@@ -261,19 +275,19 @@ def orginize_results(
         acceptance_list.append(acceptance_df)
         
         # Posterior samples.
-        # Note that non unity temperature chains do not have posterior samples.
+        # Note that non-unity temperature chains do not have posterior samples.
         if inversion.get_results_from_chains(chain):
             postsample_df = pd.DataFrame(inversion.get_results_from_chains(chain))
             
-            # Add the acceptance ratio column
-            acceptance_ratio_col = pd.Series(np.full(len(postsample_df), ratio_dict["total"]), name="acceptance_ratio")
-            postsample_df = pd.concat((acceptance_ratio_col, postsample_df), axis=1)
+            # Deprecated: Add the acceptance ratio column
+            #acceptance_ratio_col = pd.Series(np.full(len(postsample_df), ratio_dict["total"]), name="acceptance_ratio")
+            #postsample_df = pd.concat((acceptance_ratio_col, postsample_df), axis=1)
             
             # Add the chain ID column
             chain_id_col = pd.Series(np.full(len(postsample_df), chain.id), name="chain_id")
             postsample_df = pd.concat((chain_id_col, postsample_df), axis=1)
             
-            postsample_list.append(postsample_df)   
+            postsample_list.append(postsample_df)  
         
     temperatures = pd.DataFrame(temperature_dict)
     acceptances = pd.concat(acceptance_list, ignore_index=True)
@@ -513,34 +527,25 @@ class PostProcess:
         arviz_save_dir = get_unique_path(self.save_dir / "arviz")
         arviz_save_dir.mkdir(parents=True, exist_ok=True)
         
-        for dims, idata in results.items():
-            # Save results by nc (hdf5)
-            idata.to_netcdf(str(arviz_save_dir / f"results_dim{dims}.nc"))
-            
+        for dims, idata in results.items():           
             # Mean and median estimates summary dataframe
-            mean_summary_df = az.summary(idata, kind="all", round_to="none")
-            median_summary_df = az.summary(idata, kind="all_median", round_to="none")
+            mean_summary_df = az.summary(idata, kind="all", ci_kind="hdi", ci_prob=0.6827, round_to="none")
+            median_summary_df = az.summary(idata, kind="all_median", ci_prob=0.6827, round_to="none")
             # Mode estimates
             mode_dataset = az.mode(idata, round_to="none").to_dataset()
             mode_series = pd.Series(
                 np.concatenate([mode_dataset[var].values.flatten() for var in mode_dataset.data_vars]),
                 name="mode", index=mean_summary_df.index
             )
-            # Save concatenated summary with mean, median, and mode by csv
+            # Save summaries with mean and median and mode estimates
             summary_df = pd.concat((mean_summary_df, median_summary_df, mode_series), axis=1)
             summary_df.to_csv(str(arviz_save_dir / f"summary_dim{dims}.csv"))
             
             # Save posterior, trace, and autocorrelation plots
-            post_plot_save_dir = arviz_save_dir / f"post_plot_dim{dims}"
-            post_plot_save_dir.mkdir(parents=True, exist_ok=True)
-            trace_plot_save_dir = arviz_save_dir / f"trace_plot_dim{dims}"
-            trace_plot_save_dir.mkdir(parents=True, exist_ok=True)
-            autocorr_plot_save_dir = arviz_save_dir / f"autocorr_plot_dim{dims}"
-            autocorr_plot_save_dir.mkdir(parents=True, exist_ok=True)
             for param in list(idata.posterior.data_vars):
-                az.plot_dist(idata, var_names=param).savefig(str(post_plot_save_dir / f"{param}.png"))
-                az.plot_trace(idata, var_names=param).savefig(str(trace_plot_save_dir / f"{param}.png"))
-                az.plot_autocorr(idata, var_names=param).savefig(str(autocorr_plot_save_dir / f"{param}.png"))
+                az.plot_dist(idata, var_names=param).savefig(str(arviz_save_dir / f"post_dim{dims}_{param}.png"))
+                az.plot_trace(idata, var_names=param).savefig(str(arviz_save_dir / f"trace_dim{dims}_{param}.png"))
+                az.plot_autocorr(idata, var_names=param).savefig(str(arviz_save_dir / f"autocorr_dim{dims}_{param}.png"))
                 
         return results
     
