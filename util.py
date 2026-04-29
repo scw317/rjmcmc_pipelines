@@ -49,22 +49,21 @@ def get_unique_path(path: Path | str, abort_count: int = 1000) -> Path:
     return new_path
 
 
-def expand_array_columns(df: pd.DataFrame, use_multiindex: bool = False) -> pd.DataFrame:
-    """Detects list-like columns and expands them.
+def expand_array_columns(df: pd.DataFrame, use_multiindex: bool) -> pd.DataFrame:
+    """Detects list-like cell columns and expands them.
     
     Parameters
     ----------
     df : pd.DataFrame
-        Input DataFrame.
+        Input dataframe which include list-like cell columns. 
     use_multiindex :
-        If True, creates hierarchical columns. 
-        If False, creates flat names (e.g., 'col[0]').
-        The default is False.
+        If True, creates hierarchical columns (e.g., ('col', 0), ('col', 1)). 
+        If False, creates flat names (e.g., 'col[0]', 'col[1]').
         
     Returns
     -------
     pd.DataFrame
-        Column-wise expanded dataframe by decomposing list-like columns.
+        Column-wise expanded dataframe by decomposing list-like cells.
     """
     new_parts = []
     
@@ -88,7 +87,7 @@ def expand_array_columns(df: pd.DataFrame, use_multiindex: bool = False) -> pd.D
             temp_col = df[[col]]
             if use_multiindex:
                 # Align scalar columns to 2-level index system for concatenation
-                temp_col.columns = pd.MultiIndex.from_tuples([(col, "scalar")])
+                temp_col.columns = pd.MultiIndex.from_tuples([(col, "-")])
             new_parts.append(temp_col)
             
     return pd.concat(new_parts, axis=1)
@@ -151,74 +150,6 @@ def sort_and_match_array(
     return aligned_array
 
 
-def align_parameters(
-        postsamples: pd.DataFrame,
-        schema: pd.DataFrame,
-        sort_refs: list[str] | None = None,
-        ) -> pd.DataFrame:
-    """Align parameters to solve the label-switching problem.
-    
-    Parameters
-    ----------
-    postsamples : pd.DataFrame
-    schema : pd.DataFrame
-    sort_refs : list[str] | None, optional
-        Sorting reference parmaters for each trans-dimensional space.
-        If it is None, not sorted. The default is None.
-        ["{space}.{param}", ...].
-    
-    Returns
-    -------
-    df : pd.DataFrame
-        Aligned.
-    """
-    df = postsamples  # Shallow copy
-
-    for cat in ["trans", "fixed"]:
-        if cat == "trans":
-            space_groups = schema.loc[schema["cat"]=="dim", ["field", "col_name"]].values
-        else:
-            fields = np.unique(schema.loc[schema["cat"]=="fixed", "field"])
-            space_groups = [(f, None) for f in fields]  # No dim_col (None)
-
-        for space, dim_col in space_groups:
-            param_mask = (schema["field"] == space) & (schema["cat"] == cat)
-            param_col_names = schema.loc[param_mask, "col_name"].tolist()
-            
-            if not param_col_names:
-                continue
-
-            # Extract ref_idx in param_col_names for sorting reference
-            ref_idx = None
-            if sort_refs:
-                for i, p_name in enumerate(param_col_names):
-                    if p_name in sort_refs:
-                        ref_idx = i
-                        break
-
-            # Group by dimensions for trans-dimensional or use total dataframe for fixed-dimensional
-            groups = df.groupby(dim_col) if cat == "trans" else [("fixed", df)]
-            
-            for _, group in groups:
-                if len(group) == 0:
-                    continue
-                
-                # Shape: (samples, dimensions, parameters) == (N, K, P)
-                data_array = np.stack(
-                    [np.stack(group[param].to_numpy()) for param in param_col_names],
-                    axis=-1,
-                )
-                
-                aligned_array = sort_and_match_array(data_array, ref_idx)
-
-                # Write back to the original dataframe in-place
-                for p, param in enumerate(param_col_names):
-                    aligned_series = pd.Series(list(aligned_array[..., p]), index=group.index)
-                    df.loc[group.index, param] = aligned_series
-
-    return df
-
-
 def get_column_schema(postsamples: pd.DataFrame) -> pd.DataFrame:
     """Get column schema of the standard form of BayesBay posterior sample results.
     
@@ -257,11 +188,79 @@ def get_column_schema(postsamples: pd.DataFrame) -> pd.DataFrame:
     return schema
 
 
+def align_parameters(
+        postsamples: pd.DataFrame,
+        schema: pd.DataFrame,
+        sort_refs: list[str] | None = None,
+        ) -> pd.DataFrame:
+    """Align parameters to solve the label-switching problem.
+    
+    Parameters
+    ----------
+    postsamples : pd.DataFrame
+    schema : pd.DataFrame
+    sort_refs : list[str] | None, optional
+        Sorting reference parmaters for each trans-dimensional space.
+        If it is None, not sorted. The default is None.
+        ["{space}.{param}", ...].
+    
+    Returns
+    -------
+    df : pd.DataFrame
+        Aligned.
+    """
+    df = postsamples  # Shallow copy
+
+    for cat in ["trans", "fixed"]:
+        
+        if cat == "trans":
+            space_groups = schema.loc[schema["cat"]=="dim", ["field", "col_name"]].values
+        else:
+            fields = np.unique(schema.loc[schema["cat"]=="fixed", "field"])
+            space_groups = [(f, None) for f in fields]  # No dim_col (None)
+
+        for space, dim_col in space_groups:
+            param_mask = (schema["field"] == space) & (schema["cat"] == cat)
+            param_col_names = schema.loc[param_mask, "col_name"].tolist()
+            
+            if not param_col_names:
+                continue
+
+            # Extract ref_idx in param_col_names for sorting reference
+            ref_idx = None
+            if sort_refs:
+                for i, p_name in enumerate(param_col_names):
+                    if p_name in sort_refs:
+                        ref_idx = i
+                        break
+
+            # Group by dimensions for trans-dimensional or use total dataframe for fixed-dimensional
+            groups = df.groupby(dim_col) if cat == "trans" else [("fixed", df)]
+            
+            for _, group in groups:
+                if len(group) == 0:
+                    continue
+                
+                # Shape: (samples, dimensions, parameters) == (N, K, P)
+                data_array = np.stack(
+                    [np.stack(group[param].values) for param in param_col_names], axis=-1,
+                )
+                
+                aligned_array = sort_and_match_array(data_array, ref_idx)
+
+                # Write back to the original dataframe in-place
+                for p, param in enumerate(param_col_names):
+                    aligned_series = pd.Series(list(aligned_array[..., p]), index=group.index)
+                    df.loc[group.index, param] = aligned_series
+
+    return df
+
+
 def organize_results(
         inversion: bb.BayesianInversion,
         sort_refs: list[str] | None = None,
         save_dir: Path | str = "./results",
-    ) -> tuple[pd.DataFrame, pd.DataFrame]:
+    ) -> pd.DataFrame:
     """Organize sampling results and acceptance statistics.
     
     Parameters
@@ -275,13 +274,8 @@ def organize_results(
     Retruns
     -------
     postsamples : pd.DataFrame
-        Posterior samples. Note that only T=1 chains have them.
-    expanded_postsamples : pd.DataFrame
-        Column-wise expanded postsamples.
-    acceptances : pd.DataFrame
-        The numbers of proposed and accepted samples and their ratio.
-    temperatures : pd.DataFrame
-        Temperatures (T) of chains
+        Posterior samples.
+        Only unity temperature samples are included.
     """
     markov_chains = inversion.chains  #  bb.MarkovChain instance
     
@@ -317,12 +311,13 @@ def organize_results(
         acceptance_df = pd.DataFrame((proposed_dict, accepted_dict, ratio_dict))
         acceptance_list.append(acceptance_df)
         
-        # Posterior samples.
-        # Note that non-unity temperature chains do not have posterior samples.
-        if inversion.get_results_from_chains(chain):
-            postsample_df = pd.DataFrame(inversion.get_results_from_chains(chain))
+        # Posterior samples
+        postsample_dict = inversion.get_results_from_chains(chain)
+        # Note that some chains do not have any unity temperature samples.
+        if postsample_dict:
+            postsample_df = pd.DataFrame(postsample_dict)
             
-            # DEPRECATED: Add the acceptance ratio column
+            #!!! DEPRECATED: Add the acceptance ratio column to postsample_df
             #acceptance_ratio_col = pd.Series(np.full(len(postsample_df), ratio_dict["total"]), name="acceptance_ratio")
             #postsample_df = pd.concat((acceptance_ratio_col, postsample_df), axis=1)
             
@@ -341,36 +336,27 @@ def organize_results(
     postsamples = align_parameters(postsamples, schema, sort_refs)
     
     # Column-wise expansion by decomposing multi-dimension parameter columns
-    expanded_postsamples = expand_array_columns(postsamples)
+    expanded_postsamples = expand_array_columns(postsamples, use_multiindex=True)
     
     if save_dir:
         save_dir.mkdir(parents=True, exist_ok=True)
         postsamples.to_parquet(str(get_unique_path(Path(save_dir) / "postamples.parquet")), engine="pyarrow", compression="zstd")
-        expanded_postsamples.to_csv(str(get_unique_path(Path(save_dir) / "expanded_postamples.parquet")))
+        expanded_postsamples.to_csv(str(get_unique_path(Path(save_dir) / "expanded_postamples.csv")))
         acceptances.to_csv(str(get_unique_path(Path(save_dir) / "acceptances.csv")))
         temperatures.to_csv(str(get_unique_path(Path(save_dir) / "temperatures.csv")))
     
-    return postsamples, expanded_postsamples, acceptances, temperatures
+    return postsamples
 
 
 class PostProcess:
-    """Process and analyze posterior sampling results.
+    """Process and analyze posterior sampling results."""
     
-    The sampling results should the form of BayesBay output,
-    however, the BayesBay library is not needed explicitly.
-    """
-    
-    def __init__(self, postsamples: pd.DataFrame, concatenate_chains: bool = True, save_dir: Path | str = "./results"):
+    def __init__(self, postsamples: pd.DataFrame, save_dir: Path | str = "./results"):
         """
         Parameters
         ----------
         postsamples : pd.DataFrame
-            This should be the return of bb.BayesianInversion.get_results
-            or at least the same form of that.
-            Highly recommended to use the return of organize_results.
-        concatenate_chains : bool, optional
-            The same parameter as bb.BayesianInversion.get_results. The default is True.
-            Decide whether samples from all chains in 'postsamples' are aggregated or seperated.
+            Postsamples returned by organize_results.
         save_dir : Path | str, optional
             Save directory path. The default is './results'.
             
@@ -380,69 +366,26 @@ class PostProcess:
         """
         self.save_dir = Path(save_dir)
         self.save_dir.mkdir(parents=True, exist_ok=True)
-        
-        if concatenate_chains:
-            if "chain_id" in postsamples.columns:
-                self.postsamples = postsamples
-            else:
-                # Add the meaningless identical chain ID (0) column just for pipeline
-                chain_id_col = pd.Series(np.zeros(len(postsamples)), name="chain_id")
-                self.postsamples = pd.concat((chain_id_col, postsamples), axis=1)
-        else:
-            # Numbering chains from indices of the original dataframe
-            df_with_id = postsamples.copy()
-            df_with_id.index.name = "chain_id"
-            # The original indices becomes the new column named "chain_id".
-            df_with_id = df_with_id.reset_index()
-            # Explode chain-wise elements for all columns including the "chain_id" column
-            self.postsamples = df_with_id.explode(postsamples.columns.tolist()).reset_index(drop=True)
-
+        self.postsamples = postsamples
         self.get_schema()
     
     def get_schema(self):
         self.schema = get_column_schema(self.postsamples)
-
-    def align(self):
-        """Hungarian matching to solve the label-switching problem."""
-        self.postsamples = align_parameters(self.postsamples, self.schema)
     
-    def to_array(self, stack_chains, concat_params, to_3d) -> (dict[tuple[int, ...], np.ndarray], list[list[str]]):
-        """Convert self.postsamples into np.ndarray for each combination of dimensions.
+    def to_arviz(self, stack_chains: bool) -> dict:
+        """Convert self.postsamples into compatible form to az.from_dict.
         
         Parameters
         ----------
         stack_chains : bool
-            Stack chians as a new array axis.
-            If each chain has the different number of draws, trimming draws.
-            A draw is samples for each chain.
-        concat_params : bool
-            Concatenate parameters as a same array axis.
-        to_3d : bool
-            Arrays become 3d which is compatible to arviz.
-    
+            Determine to stack chains as a new axis.
+        
         Returns
         -------
-        sample_arrays_by_dims : dict[tuple[int, ...], np.ndarray]
-            The keys are combinations of dimensions.
-            The values are posterior samples arrays.
-        sample_array_schema : list[list[str]]
-            [["{space}.n_dimensions", ...], ["{space}.{param}", ...]].
-        
-        Notes
-        -----
-        For arviz, recommend stack_chains = True, concat_params = False, and to_3d = True. 
-        For GMM, recommend stack_chains = False, concat_params = True, and to_3d = False.
-        
-        Examples
-        --------
-        if stack_chains == True and concat_params == True:
-            sample_arrays_by_dims = {(dims,): array(chains, draws, all params)}.
-        if stack_chains == True and concat_params == False:
-            sample_arrays_by_dims = {(dims,): {param: array(chains, draws, param)}}.
-        if stack_chains == False and concat_params == True:
-            sample_arrays_by_dims = {(dims,): array(samples, all params)}.
-        if stack_chains == False and concat_params == False:
-            sample_arrays_by_dims = {(dims,): {param: array(samples, param)}.
+        sample_arrays_by_dims : dict
+            Shape: {(dim, ...): {param: (chains, draws, params)}}
+            If any trans-dimensional space does not exist,
+            Instead of (dim, ...), None goes in.
         """
         df = self.postsamples
         schema = self.schema
@@ -454,17 +397,16 @@ class PostProcess:
         # If not, the original dataframe is the only group itself.
         groups = df.groupby(dim_col_names) if dim_col_names else [(None, df)]
         
-        sample_array_schema = [dim_col_names, param_col_names]
-        sample_arrays_by_dims = {}  # {(dims,): array}
+        arviz_dict_by_dims = {}
         
         # If stacking chains have inhomogeneous draws, triming samples for each chain to be homogeneous.
         if stack_chains:
             for dims, group in groups:
                 if len(group) == 0:
                     continue
-                
                 group = group.sort_values("chain_id")
-                chain_ids = group["chain_id"].to_numpy()
+                chain_ids = group["chain_id"].values
+                
                 # Find all chain IDs and their sample (draw) numbers
                 unique_chain_ids, chain_id_counts = np.unique(chain_ids, return_counts=True)
                 # The minimum draw number of chains among all chain IDs
@@ -475,52 +417,29 @@ class PostProcess:
                 descending_counter = np.concatenate([np.arange(count)[::-1] for count in chain_id_counts])
                 # Masking False where descending counting exceeds the minimum
                 chain_mask = descending_counter < min_draw
-                
-                if concat_params:
-                    param_arrays = np.concatenate(
-                        [np.stack(group[param].to_numpy()[chain_mask]) for param in param_col_names],  # Shape: [(samples, param)]
-                        axis=1,
-                    )  # Shape: (samples, all params)
-                    param_arrays = param_arrays.reshape(len(unique_chain_ids), min_draw, -1)  # Shape: (chains, draws, all params)
                     
-                else:
-                    param_arrays = {
-                        param: np.stack(group[param].to_numpy()[chain_mask]).reshape(len(unique_chain_ids), min_draw, -1)  # Shape: (chains, draws, param)
-                        for param in param_col_names
-                    }  # Shape: {param: (chains, draws, param)}
-                sample_arrays_by_dims[dims] = param_arrays
-        
+                param_arrays = {
+                    param: np.stack(group[param].values[chain_mask]).reshape(len(unique_chain_ids), min_draw, -1)  
+                    for param in param_col_names
+                } 
+                arviz_dict_by_dims[dims] = param_arrays  # Shape: {param: (chains, draws, params)}
+                
+        # Concatenate chains as one.
         else:
             for dims, group in groups:
                 if len(group) == 0:
                     continue
-                
-                if concat_params:
-                    param_arrays = np.concatenate(
-                        [np.stack(group[param].to_numpy()) for param in param_col_names],  # Shape: [(samples, param)]
-                        axis=1,
-                    )  # Shape: (sampls, all params)
-                    
-                else:
-                    param_arrays = {param: np.stack(group[param].to_numpy()) for param in param_col_names}  # Shape: {param: (samples, param)}
-                sample_arrays_by_dims[dims] = param_arrays
+                param_arrays = {param: np.stack(group[param].values)[np.newaxis, ...] for param in param_col_names}
+                arviz_dict_by_dims[dims] = param_arrays  # Shape: {param: (1, draws, params)}
         
-        # Make the shape {(dims,): array(1, samples, all params)}.
-        if to_3d and (not stack_chains) and concat_params:
-            for key, val in sample_arrays_by_dims.items():
-                sample_arrays_by_dims[key] = val[np.newaxis, ...]
-                
-        # Make the shape {(dims,): {param: array(1, samples, param)}}
-        if to_3d and (not stack_chains) and (not concat_params):
-            for dim_key, in_dict in sample_arrays_by_dims.items():
-                for key, val in in_dict.items():
-                    sample_arrays_by_dims[dim_key][key] = val[np.newaxis, ...]
-        
-        return sample_arrays_by_dims, sample_array_schema
+        return arviz_dict_by_dims[dims]
     
+    def to_gmm(self):
+        return None
+                    
     def est_dims(self) -> pd.DataFrame:
         dim_col_names = self.schema.loc[self.schema["cat"]=="dim", "col_name"].tolist()
-        dim_cols = self.postsamples[dim_col_names].to_numpy()  # Shape: (samples, spaces)
+        dim_cols = self.postsamples[dim_col_names].values  # Shape: (samples, spaces)
         
         # Dimensions bins edges for each space
         bins_edges = [
@@ -600,6 +519,120 @@ class PostProcess:
     
     def by_gmm(self):
         return None
+    
+    def to_array(self, stack_chains, concat_params, to_3d) -> (dict[tuple[int, ...], np.ndarray], list[list[str]]):
+        """Convert self.postsamples into np.ndarray for each combination of dimensions.
+        
+        #!!! DEPRECATED: Separated by to_arviz and to_gmm.
+        
+        Parameters
+        ----------
+        stack_chains : bool
+            Stack chians as a new array axis.
+            If each chain has the different number of draws, trimming draws.
+            A draw is samples for each chain.
+        concat_params : bool
+            Concatenate parameters as a same array axis.
+        to_3d : bool
+            Arrays become 3d which is compatible to arviz.
+    
+        Returns
+        -------
+        sample_arrays_by_dims : dict[tuple[int, ...], np.ndarray]
+            The keys are combinations of dimensions.
+            The values are posterior samples arrays.
+        sample_array_schema : list[list[str]]
+            [["{space}.n_dimensions", ...], ["{space}.{param}", ...]].
+        
+        Notes
+        -----
+        For arviz, recommend stack_chains = True, concat_params = False, and to_3d = True. 
+        For GMM, recommend stack_chains = False, concat_params = True, and to_3d = False.
+        
+        Examples
+        --------
+        if stack_chains == True and concat_params == True:
+            sample_arrays_by_dims = {(dims,): array(chains, draws, all params)}.
+        if stack_chains == True and concat_params == False:
+            sample_arrays_by_dims = {(dims,): {param: array(chains, draws, param)}}.
+        if stack_chains == False and concat_params == True:
+            sample_arrays_by_dims = {(dims,): array(samples, all params)}.
+        if stack_chains == False and concat_params == False:
+            sample_arrays_by_dims = {(dims,): {param: array(samples, param)}.
+        """
+        df = self.postsamples
+        schema = self.schema
+        
+        dim_col_names = schema.loc[schema["cat"]=="dim", "col_name"].tolist()  # "{space}.n_dimensions"
+        param_col_names = schema.loc[schema["cat"].isin(["trans", "fixed"]), "col_name"].tolist()  # "{space}.{param}"
+        
+        # Group by dimensions if trans-dimensional spaces are exist.
+        # If not, the original dataframe is the only group itself.
+        groups = df.groupby(dim_col_names) if dim_col_names else [(None, df)]
+        
+        sample_array_schema = [dim_col_names, param_col_names]
+        sample_arrays_by_dims = {}  # {(dims,): array}
+        
+        # If stacking chains have inhomogeneous draws, triming samples for each chain to be homogeneous.
+        if stack_chains:
+            for dims, group in groups:
+                if len(group) == 0:
+                    continue
+                
+                group = group.sort_values("chain_id")
+                chain_ids = group["chain_id"].values
+                # Find all chain IDs and their sample (draw) numbers
+                unique_chain_ids, chain_id_counts = np.unique(chain_ids, return_counts=True)
+                # The minimum draw number of chains among all chain IDs
+                min_draw = np.min(chain_id_counts)
+                
+                # Counting each chain ID in descending order to trim front draws
+                # e.g., [3 2 1 0 2 1 0 4 3 2 1 0 ...] when chain_id_counts == [4 3 5 ...]
+                descending_counter = np.concatenate([np.arange(count)[::-1] for count in chain_id_counts])
+                # Masking False where descending counting exceeds the minimum
+                chain_mask = descending_counter < min_draw
+                
+                if concat_params:
+                    param_arrays = np.concatenate(
+                        [np.stack(group[param].values[chain_mask]) for param in param_col_names],  # Shape: [(samples, param)]
+                        axis=1,
+                    )  # Shape: (samples, all params)
+                    param_arrays = param_arrays.reshape(len(unique_chain_ids), min_draw, -1)  # Shape: (chains, draws, all params)
+                    
+                else:
+                    param_arrays = {
+                        param: np.stack(group[param].values[chain_mask]).reshape(len(unique_chain_ids), min_draw, -1)  # Shape: (chains, draws, param)
+                        for param in param_col_names
+                    }  # Shape: {param: (chains, draws, param)}
+                sample_arrays_by_dims[dims] = param_arrays
+        
+        else:
+            for dims, group in groups:
+                if len(group) == 0:
+                    continue
+                
+                if concat_params:
+                    param_arrays = np.concatenate(
+                        [np.stack(group[param].values) for param in param_col_names],  # Shape: [(samples, param)]
+                        axis=1,
+                    )  # Shape: (sampls, all params)
+                    
+                else:
+                    param_arrays = {param: np.stack(group[param].values) for param in param_col_names}  # Shape: {param: (samples, param)}
+                sample_arrays_by_dims[dims] = param_arrays
+        
+        # Make the shape {(dims,): array(1, samples, all params)}.
+        if to_3d and (not stack_chains) and concat_params:
+            for key, val in sample_arrays_by_dims.items():
+                sample_arrays_by_dims[key] = val[np.newaxis, ...]
+                
+        # Make the shape {(dims,): {param: array(1, samples, param)}}
+        if to_3d and (not stack_chains) and (not concat_params):
+            for dim_key, in_dict in sample_arrays_by_dims.items():
+                for key, val in in_dict.items():
+                    sample_arrays_by_dims[dim_key][key] = val[np.newaxis, ...]
+        
+        return sample_arrays_by_dims, sample_array_schema
 
 
 class InversionRepeater:
