@@ -1,14 +1,12 @@
-name: bayesbay-env
+name: rjmcmc-env
 channels:
   - conda-forge
   - defaults
 dependencies:
-  - python>=3.9,<=3.13
+  - python>=3.9,<3.13
   - arviz
   - bayesbay
-  - h5netcdf
   - matplotlib
-  - netcdf4
   - numpy
   - pandas
   - pyarrow
