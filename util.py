@@ -241,7 +241,7 @@ def align_parameters(
                 if len(group) == 0:
                     continue
                 
-                # Shape: (samples, dimensions, parameters) == (N, K, P)
+                # Shape: (draws, dimensions, parameters) == (M, K, P)
                 data_array = np.stack(
                     [np.stack(group[param].values) for param in param_col_names], axis=-1,
                 )
@@ -383,7 +383,7 @@ class PostProcess:
         Returns
         -------
         sample_arrays_by_dims : dict
-            Shape: {(dim, ...): {param: (chains, draws, params)}}
+            Shape: {(dim, ...): {param: (chains, draws, params)}}.
             If any trans-dimensional space does not exist,
             Instead of (dim, ...), None goes in.
         """
@@ -404,39 +404,55 @@ class PostProcess:
             for dims, group in groups:
                 if len(group) == 0:
                     continue
-                group = group.sort_values("chain_id")
-                chain_ids = group["chain_id"].values
                 
-                # Find all chain IDs and their sample (draw) numbers
-                unique_chain_ids, chain_id_counts = np.unique(chain_ids, return_counts=True)
-                # The minimum draw number of chains among all chain IDs
-                min_draw = np.min(chain_id_counts)
+                # Count draws per chain_id
+                counts = group["chain_id"].value_counts().sort_values(ascending=False)
+                unique_ids = counts.index.values
+                n_draws = counts.values
                 
-                # Counting each chain ID in descending order to trim front draws
-                # e.g., [3 2 1 0 2 1 0 4 3 2 1 0 ...] when chain_id_counts == [4 3 5 ...]
-                descending_counter = np.concatenate([np.arange(count)[::-1] for count in chain_id_counts])
-                # Masking False where descending counting exceeds the minimum
-                chain_mask = descending_counter < min_draw
+                # Find the optimal number of chains to keep.
+                # Total sample volume = (number of chains) * (min draws among them).
+                # Since n_draws is sorted descending, min draw for i chains is n_draws[i-1].
+                candidate_volumes = np.arange(1, len(n_draws) + 1) * n_draws
+                
+                # The optimal index maximize sample volume.
+                opt_idx = np.argmax(candidate_volumes)
                     
-                param_arrays = {
-                    param: np.stack(group[param].values[chain_mask]).reshape(len(unique_chain_ids), min_draw, -1)  
-                    for param in param_col_names
-                } 
-                arviz_dict_by_dims[dims] = param_arrays  # Shape: {param: (chains, draws, params)}
+                best_n_chains = opt_idx + 1
+                best_min_draw = n_draws[opt_idx]
+                best_chain_ids = unique_ids[:best_n_chains]
                 
-        # Concatenate chains as one.
+                # Filter and re-sort group to include only optimal chains
+                filtered_group = group[group["chain_id"].isin(best_chain_ids)].sort_values("chain_id")
+                
+                # Trimming using descending counter
+                # We must re-calculate counts for the filtered/sorted group
+                _, final_counts = np.unique(filtered_group["chain_id"].values, return_counts=True)
+                descending_counter = np.concatenate([np.arange(c)[::-1] for c in final_counts])
+                chain_mask = descending_counter < best_min_draw
+                
+                # Build parameter arrays: (chains, draws, params)
+                param_arrays = {}
+                for param in param_col_names:
+                    # Stack object arrays of shape (draws, params) into 3d array
+                    data = np.stack(filtered_group[param].values[chain_mask])
+                    param_arrays[param] = data.reshape(best_n_chains, best_min_draw, -1)
+                
+                arviz_dict_by_dims[dims] = param_arrays
+                
         else:
+            # Non-stacking logic: treat all samples as one long chain (1, total_draws, params)
             for dims, group in groups:
                 if len(group) == 0:
                     continue
-                param_arrays = {param: np.stack(group[param].values)[np.newaxis, ...] for param in param_col_names}
-                arviz_dict_by_dims[dims] = param_arrays  # Shape: {param: (1, draws, params)}
+                param_arrays = {
+                    param: np.stack(group[param].values)[np.newaxis, ...] 
+                    for param in param_col_names
+                }
+                arviz_dict_by_dims[dims] = param_arrays
         
-        return arviz_dict_by_dims[dims]
+        return arviz_dict_by_dims
     
-    def to_gmm(self):
-        return None
-                    
     def est_dims(self) -> pd.DataFrame:
         dim_col_names = self.schema.loc[self.schema["cat"]=="dim", "col_name"].tolist()
         dim_cols = self.postsamples[dim_col_names].values  # Shape: (samples, spaces)
@@ -516,14 +532,44 @@ class PostProcess:
                 az.plot_autocorr(idata, var_names=param).savefig(str(arviz_save_dir / f"autocorr_dim{dims}_{param}.png"))
                 
         return results
-    
+
+    def to_gmm(self) -> dict[tuple[int, ...] | None, np.ndarray]:
+        """Convert self.postsamples into 2d arrays by combinations of dimensions.
+        
+        Returns
+        -------
+        arrays_by_dims : dict[tuple[int, ...] | None, np.ndarray]
+            Shape: {(dim, ...): np.ndarray}.
+            If any trans-dimensional space does not exist,
+            Instead of (dim, ...), None goes in.
+        """
+        df = self.postsamples
+        schema = self.schema
+        
+        dim_col_names = schema.loc[schema["cat"]=="dim", "col_name"].tolist()  # "{space}.n_dimensions"
+        param_col_names = schema.loc[schema["cat"].isin(["trans", "fixed"]), "col_name"].tolist()  # "{space}.{param}"
+        
+        arrays_by_dims = {}
+        
+        # Group by dimensions if trans-dimensional spaces are exist.
+        # If not, the original dataframe is the only group itself.
+        groups = df.groupby(dim_col_names) if dim_col_names else [(None, df)]
+        
+        for dims, group in groups:
+            if len(group) == 0:
+                continue
+            array = np.concatenate([np.stack(group[param].values) for param in param_col_names], axis=1)
+            arrays_by_dims[dims] = array
+        
+        return arrays_by_dims
+
     def by_gmm(self):
         return None
     
-    def to_array(self, stack_chains, concat_params, to_3d) -> (dict[tuple[int, ...], np.ndarray], list[list[str]]):
+    def to_array(self, stack_chains, concat_params, to_3d) -> tuple[dict, list]:
         """Convert self.postsamples into np.ndarray for each combination of dimensions.
         
-        #!!! DEPRECATED: Separated by to_arviz and to_gmm.
+        #!!! DEPRECATED: Separated into to_arviz and to_gmm methods.
         
         Parameters
         ----------
@@ -636,6 +682,7 @@ class PostProcess:
 
 
 class InversionRepeater:
+    """Continue inversions following the previous state."""
     
     def __init__(
             self,
@@ -643,20 +690,24 @@ class InversionRepeater:
             sort_refs: list[str] | None = None,
             save_dir: Path | str = "./results",
         ):
-
         self.inversion = inversion
+        self.sort_refs = sort_refs
+        self.save_dir = Path(save_dir)
         
-        def run(self, **kwargs):
-            self.inversion.run(**kwargs)
-            
-            postsamples, expanded_postsamples, acceptances, temperatures = organize_results(
-                self.inversion, self.sort_refs, self.save_dir
-            )
+        # Arguments for inversion.run
+        self.run_kwargs = {}
+        
+    def run(self, **kwargs):
+        # Update shared configuration
+        self.run_kwargs.update(kwargs)
+        self.inversion.run(**self.run_kwargs)
+        
+    def process(self):
+        postsamples = organize_results(
+            self.inversion, self.sort_refs, self.save_dir
+        )
+        post_process = PostProcess(postsamples, self.save_dir)
+        post_process.est_dims()
+        post_process.by_arviz(False)
 
-            post_process = PostProcess(postsamples, True, self.save_dir)
-            post_process.est_dims()
-            post_process.by_arviz()
-        
-        return None
-    
     

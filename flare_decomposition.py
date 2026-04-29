@@ -3,6 +3,8 @@ from pathlib import Path
 import bayesbay as bb
 import numpy as np
 
+from util import InversionRepeater
+
 # ================================
 # %% Data
 # ++++++++++++++++++++++++++++++++
@@ -12,27 +14,27 @@ data_path = Path.home() / "Dropbox/workspace/paper/Kang2026-sub/analysis/bu.txt"
 data = np.loadtxt(data_path, comments="#")
 
 # Data save path
-save_dir = Path.home() / "Dropbox/workspace/paper/Kang2026-sub/analysis/bu/test13"
+save_dir = Path.home() / "Dropbox/workspace/paper/Kang2026-sub/analysis/bu/test16"
 
 # ================================
 # %% Sampling arguments preset
 # ++++++++++++++++++++++++++++++++
 
 # The limit number of model components
-n_dim_min = 10
+n_dim_min = 1
 n_dim_max = 30
 
 # The final number of posterior samples is
 # (The number of T=1 chains) * (n_iterations - brunin_iterations) / save_every.
-n_chains = 20
-n_iterations = 2000000
-burnin_iterations = 1000000
+n_chains = 16
+n_iterations = 500000
+burnin_iterations = 400000
 save_every = 1000
 verbose = True
-print_every = 500000
+print_every = 100000
 
-#sampler = bb.samplers.SimulatedAnnealing(temperature_start=20)
-sampler = bb.samplers.ParallelTempering(temperature_max=5, swap_every=1000)
+sampler = bb.samplers.ParallelTempering(temperature_max=5, swap_every=10000)
+#sampler = bb.samplers.SimulatedAnnealing(temperature_start=10)
 
 # ================================
 # %% Parameters preset
@@ -49,17 +51,22 @@ fixed_param_names = ["fqs"]
 # Sort samples refered by sort_ref
 sort_refs = ["flare.t0"]
 
+# ================================
+# %% Prior preset
+# ++++++++++++++++++++++++++++++++
+
 period = data[-1, 0] - data[0, 0]
 time_gaps = (np.roll(data[:, 0], -1) - data[:, 0])[:-1]
 flux_gaps = np.abs((np.roll(data[:, 1], -1) - data[:, 1]))[:-1]
 
-# Parameters limitation
+# Trans-diemnsional parameters limitation
 trans_param_limits = [
     [data[:, 0].min(), data[:, 0].max()],
     [flux_gaps.min(), data[:, 1].max()],
     [time_gaps.min(), period],
     [0.1, 5],
 ]
+# Fixed-dimensional parameters limitation
 fixed_param_limits = [
     [0, data[:, 1].min()],
 ]
@@ -67,10 +74,6 @@ fixed_param_limits = [
 # Standard deviations of perturbation distribution
 trans_param_perturb_stds = np.diff(np.array(trans_param_limits)).flatten() * 0.005
 fixed_param_perturb_stds = np.diff(np.array(fixed_param_limits)).flatten() * 0.1
-
-# ================================
-# %% Prior preset
-# ++++++++++++++++++++++++++++++++
 
 trans_priors = []
 for name, lim, std in zip(trans_param_names, trans_param_limits, trans_param_perturb_stds):
@@ -162,7 +165,9 @@ inversion = bb.BayesianInversion(
     n_chains=n_chains,
 )
 
-inversion.run(
+inversion_repeater = InversionRepeater(inversion, sort_refs=sort_refs, save_dir=save_dir)
+
+inversion_repeater.run(
     sampler=sampler,
     n_iterations=n_iterations,
     burnin_iterations=burnin_iterations,
