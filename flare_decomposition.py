@@ -14,26 +14,26 @@ data_path = Path.home() / "Dropbox/workspace/paper/Kang2026-sub/analysis/bu.txt"
 data = np.loadtxt(data_path, comments="#")
 
 # Data save path
-save_dir = Path.home() / "Dropbox/workspace/paper/Kang2026-sub/analysis/bu/test11"
+save_dir = Path.home() / "Dropbox/workspace/paper/Kang2026-sub/analysis/bu/test10"
+save_dir.mkdir(parents=True, exist_ok=True)
 
 # ================================
 # %% Sampling arguments preset
 # ++++++++++++++++++++++++++++++++
 
 # The limit number of model components
-n_dim_min = 10
-n_dim_max = 20
+n_dim_min = 1
+n_dim_max = 30
 
 # The final number of posterior samples is
 # (The number of T=1 chains) * (n_iterations - brunin_iterations) / save_every.
-n_chains = 4
-n_iterations = 1000000
-burnin_iterations = 200000
-save_every = 100
+n_chains = 16
+n_iterations = 5000000
+burnin_iterations = 2000000
+save_every = 1000
 verbose = True
 print_every = 100000
-sampler = bb.samplers.VanillaSampler()
-#bb.samplers.ParallelTempering(swap_every=100000)
+sampler = bb.samplers.ParallelTempering(swap_every=100000)
 
 # ================================
 # %% Parameters preset
@@ -99,9 +99,9 @@ for name, lim in zip(fixed_param_names, fixed_param_limits):
 
 trans_space = bb.parameterization.ParameterSpace(
     name=trans_space_name,
-    n_dimensions=None if n_dim_min != n_dim_max else n_dim_min,
-    n_dimensions_min=n_dim_min if n_dim_min != n_dim_max else None,
-    n_dimensions_max=n_dim_max if n_dim_min != n_dim_max else  None,
+    n_dimensions=None,
+    n_dimensions_min=n_dim_min,
+    n_dimensions_max=n_dim_max,
     parameters=trans_priors,
 )
 
@@ -145,7 +145,7 @@ def fwd_func(state):
 target = bb.likelihood.Target(
     name="flux_density",
     dobs=data[:, 1],
-    covariance_mat_inv=1 / data[:, 2]**2,
+    covariance_mat_inv=1/data[:, 2]**2,
 )
 
 log_likelihood = bb.likelihood.LogLikelihood(
