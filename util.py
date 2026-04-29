@@ -1,4 +1,3 @@
-import warnings
 from pathlib import Path
 
 import arviz as az
@@ -6,13 +5,10 @@ import bayesbay as bb
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+from pandas.api.types import is_list_like
 from scipy.optimize import linear_sum_assignment
 from scipy.spatial.distance import cdist
 from scipy.stats import median_abs_deviation
-from sklearn.cluster import HDBSCAN
-from sklearn.decomposition import PCA
-from sklearn.mixture import GaussianMixture
-from umap import UMAP
 
 
 def get_unique_path(path: Path | str, abort_count: int = 1000) -> Path:
@@ -51,44 +47,51 @@ def get_unique_path(path: Path | str, abort_count: int = 1000) -> Path:
     counter = np.random.randint(abort_count + 1, 100 * abort_count)
     new_path = parent / f"{stem}_{counter}{suffix}"
     return new_path
-            
 
-def get_column_schema(postsamples: pd.DataFrame) -> pd.DataFrame:
-    """Get column schema of the standard form of BayesBay posterior sample results.
+
+def expand_array_columns(df: pd.DataFrame, use_multiindex: bool = False) -> pd.DataFrame:
+    """Detects list-like columns and expands them.
     
-    Recognize which column represents dimension features, targets,
-    or parameters of trans or fixed dimensional space, and so on.
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Input DataFrame.
+    use_multiindex :
+        If True, creates hierarchical columns. 
+        If False, creates flat names (e.g., 'col[0]').
+        The default is False.
+        
+    Returns
+    -------
+    pd.DataFrame
+        Column-wise expanded dataframe by decomposing list-like columns.
     """
-    # Add original column names for reference
-    schema = pd.Series(postsamples.columns, name="col_name", dtype=str)
-
-    # Regex logic: 
-    # field: Space or target names (everything before the last dot)
-    # attr: Parameter or attribute names (after the last dot)
-    # This handles "{space}.{param}", "{space}.n_dimensions" and f"{target}.dpred".
-    pattern = r"^(?P<field>.*)\.(?P<attr>.*)$"
-    schema = pd.concat((schema, schema.str.extract(pattern)), axis=1)
+    new_parts = []
     
-    # Pre-calculate the set of trans-dimensional spaces
-    # A space is trans-dimensional if it contains "n_dimensions" anchor
-    trans_spaces = set(schema.loc[schema["attr"] == "n_dimensions", "field"])
-    
-    # Define categorization conditions and corresponding values
-    # Priority is strictly enforced by the order of the list
-    conditions = [
-        schema["field"].isna() & schema["attr"].isna(),  # Rule 1: Fallback for no split
-        schema["attr"] == "n_dimensions",  # Rule 2: Dimension count column
-        (schema["field"].isin(trans_spaces)) & (schema["attr"] != "n_dimensions"),  # Rule 3: Trans params
-        schema["attr"] == "dpred"  # Rule 4: Forward model output
-    ]
-    
-    # Outpus following conditions
-    outputs = [schema["col_name"], "dim", "trans", "target"]
-    
-    # Apply selection logic with "fixed" as the default case
-    schema["cat"] = np.select(conditions, outputs, default="fixed")
-    
-    return schema
+    for col in df.columns:
+        # Detect if the column contains list-like elements (excluding strings)
+        first_val = df[col].dropna().iloc[0] if not df[col].dropna().empty else None
+        
+        if is_list_like(first_val) and not isinstance(first_val, (str, bytes)):
+            # Expand array to multiple columns
+            expanded = pd.DataFrame(df[col].tolist(), index=df.index)
+            
+            if use_multiindex:
+                # The original column index become level 0 (macroscopic) index.
+                expanded.columns = pd.MultiIndex.from_product([[col], range(expanded.shape[1])])
+            else:
+                expanded.columns = [f"{col}[{i}]" for i in range(expanded.shape[1])]
+            
+            new_parts.append(expanded)
+        else:
+            # Handle scalar columns
+            temp_col = df[[col]]
+            if use_multiindex:
+                # Align scalar columns to 2-level index system for concatenation
+                temp_col.columns = pd.MultiIndex.from_tuples([(col, "scalar")])
+            new_parts.append(temp_col)
+            
+    return pd.concat(new_parts, axis=1)
 
 
 def sort_and_match_array(
@@ -216,7 +219,45 @@ def align_parameters(
     return df
 
 
-def orginize_results(
+def get_column_schema(postsamples: pd.DataFrame) -> pd.DataFrame:
+    """Get column schema of the standard form of BayesBay posterior sample results.
+    
+    Recognize which column represents dimension features, targets,
+    or parameters of trans or fixed dimensional space, and so on.
+    """
+    # Add original column names for reference
+    schema = pd.Series(postsamples.columns, name="col_name", dtype=str)
+
+    # Regex logic: 
+    # field: Space or target names (everything before the last dot)
+    # attr: Parameter or attribute names (after the last dot)
+    # This handles "{space}.{param}", "{space}.n_dimensions" and f"{target}.dpred".
+    pattern = r"^(?P<field>.*)\.(?P<attr>.*)$"
+    schema = pd.concat((schema, schema.str.extract(pattern)), axis=1)
+    
+    # Pre-calculate the set of trans-dimensional spaces
+    # A space is trans-dimensional if it contains "n_dimensions" anchor
+    trans_spaces = set(schema.loc[schema["attr"] == "n_dimensions", "field"])
+    
+    # Define categorization conditions and corresponding values
+    # Priority is strictly enforced by the order of the list
+    conditions = [
+        schema["field"].isna() & schema["attr"].isna(),  # Rule 1: Fallback for no split
+        schema["attr"] == "n_dimensions",  # Rule 2: Dimension count column
+        (schema["field"].isin(trans_spaces)) & (schema["attr"] != "n_dimensions"),  # Rule 3: Trans params
+        schema["attr"] == "dpred"  # Rule 4: Forward model output
+    ]
+    
+    # Outpus following conditions
+    outputs = [schema["col_name"], "dim", "trans", "target"]
+    
+    # Apply selection logic with "fixed" as the default case
+    schema["cat"] = np.select(conditions, outputs, default="fixed")
+    
+    return schema
+
+
+def organize_results(
         inversion: bb.BayesianInversion,
         sort_refs: list[str] | None = None,
         save_dir: Path | str = "./results",
@@ -235,6 +276,8 @@ def orginize_results(
     -------
     postsamples : pd.DataFrame
         Posterior samples. Note that only T=1 chains have them.
+    expanded_postsamples : pd.DataFrame
+        Column-wise expanded postsamples.
     acceptances : pd.DataFrame
         The numbers of proposed and accepted samples and their ratio.
     temperatures : pd.DataFrame
@@ -279,7 +322,7 @@ def orginize_results(
         if inversion.get_results_from_chains(chain):
             postsample_df = pd.DataFrame(inversion.get_results_from_chains(chain))
             
-            # Deprecated: Add the acceptance ratio column
+            # DEPRECATED: Add the acceptance ratio column
             #acceptance_ratio_col = pd.Series(np.full(len(postsample_df), ratio_dict["total"]), name="acceptance_ratio")
             #postsample_df = pd.concat((acceptance_ratio_col, postsample_df), axis=1)
             
@@ -297,13 +340,17 @@ def orginize_results(
     schema = get_column_schema(postsamples)
     postsamples = align_parameters(postsamples, schema, sort_refs)
     
+    # Column-wise expansion by decomposing multi-dimension parameter columns
+    expanded_postsamples = expand_array_columns(postsamples)
+    
     if save_dir:
         save_dir.mkdir(parents=True, exist_ok=True)
         postsamples.to_parquet(str(get_unique_path(Path(save_dir) / "postamples.parquet")), engine="pyarrow", compression="zstd")
+        expanded_postsamples.to_csv(str(get_unique_path(Path(save_dir) / "expanded_postamples.parquet")))
         acceptances.to_csv(str(get_unique_path(Path(save_dir) / "acceptances.csv")))
         temperatures.to_csv(str(get_unique_path(Path(save_dir) / "temperatures.csv")))
     
-    return postsamples, acceptances, temperatures
+    return postsamples, expanded_postsamples, acceptances, temperatures
 
 
 class PostProcess:
@@ -471,7 +518,7 @@ class PostProcess:
         
         return sample_arrays_by_dims, sample_array_schema
     
-    def est_dims(self):
+    def est_dims(self) -> pd.DataFrame:
         dim_col_names = self.schema.loc[self.schema["cat"]=="dim", "col_name"].tolist()
         dim_cols = self.postsamples[dim_col_names].to_numpy()  # Shape: (samples, spaces)
         
@@ -514,8 +561,8 @@ class PostProcess:
         
         return dim_mode_df
                         
-    def by_arviz(self, stack_chains: bool = True):
-        """Get estimates by arviz library."""
+    def by_arviz(self, stack_chains: bool = True) -> dict:
+        """Get estimates and statistics by arviz library."""
         samples_by_dims, sample_schema = self.to_array(
             stack_chains=stack_chains, concat_params=False, to_3d=True
         )
@@ -528,16 +575,18 @@ class PostProcess:
         arviz_save_dir.mkdir(parents=True, exist_ok=True)
         
         for dims, idata in results.items():           
-            # Mean and median estimates summary dataframe
+            # Mean and median estimates and statistics summary dataframes
             mean_summary_df = az.summary(idata, kind="all", ci_kind="hdi", ci_prob=0.6827, round_to="none")
             median_summary_df = az.summary(idata, kind="all_median", ci_prob=0.6827, round_to="none")
+            
             # Mode estimates
             mode_dataset = az.mode(idata, round_to="none").to_dataset()
             mode_series = pd.Series(
                 np.concatenate([mode_dataset[var].values.flatten() for var in mode_dataset.data_vars]),
                 name="mode", index=mean_summary_df.index
             )
-            # Save summaries with mean and median and mode estimates
+            
+            # Save concatenated dataframe with estimates and statistics
             summary_df = pd.concat((mean_summary_df, median_summary_df, mode_series), axis=1)
             summary_df.to_csv(str(arviz_save_dir / f"summary_dim{dims}.csv"))
             
@@ -549,146 +598,32 @@ class PostProcess:
                 
         return results
     
-    def by_gmm_for_dim(self, samples, var_threshold: float = 0.95, init_method="index"):
-        """Robust pipeline for high-dimensional posterior analysis.
-        
-        Handles extremely small sample sizes and non-linear manifolds.
-        
-        Parameters
-        ----------
-        samples : np.ndarray
-            shape (n_samples, n_params)
-        var_threshold : float
-            variance ratio for dimensionality reduction.
-        init_method : str
-            'index' (nearest sample) or 'inverse' (UMAP inverse_transform).
-        """
-        n_samples, n_params = samples.shape
-        
-        # Check for absolute minimum samples to prevent failure
-        if n_samples < 2:
-            raise ValueError(f"Insufficient samples (N={n_samples}). Minimum N=2 required.")
-    
-        # Data standardization: Handling zero-variance axes to avoid division by zero
-        std_val = np.std(samples, axis=0)
-        std_val[std_val == 0] = 1.0 
-        samples_std = (samples - np.mean(samples, axis=0)) / std_val
-    
-        # --- Step 1: Dimensionality Selection via PCA ---
-        # SVD-based PCA to determine the intrinsic dimensionality of the manifold
-        pca = PCA().fit(samples_std)
-        cum_var = np.cumsum(pca.explained_variance_ratio_)
-        target_dim = np.argmax(cum_var >= var_threshold) + 1
-        
-        # Logic: Only reduce if target_dim < n_params and N > target_dim
-        if target_dim >= n_params:
-            print(f"Reduction bypassed: Target dim ({target_dim}) >= Original ({n_params}).")
-            reduced_space = samples_std
-            use_reduction = False
-        else:
-            print(f"Target dimension: {target_dim} (Explains {cum_var[target_dim-1]:.2%} variance).")
-            use_reduction = True
-    
-        # --- Step 2: Non-linear Projection via UMAP ---
-        reducer = None
-        if use_reduction:
-            # Adaptive neighbors based on sample size to prevent algorithm collapse
-            adj_neighbors = min(15, n_samples - 1)
-            try:
-                reducer = UMAP(n_components=target_dim, n_neighbors=adj_neighbors, random_state=42)
-                reduced_space = reducer.fit_transform(samples_std)
-            except Exception as e:
-                warnings.warn(f"UMAP transformation failed: {e}. Falling back to PCA space.")
-                reduced_space = PCA(n_components=min(target_dim, n_samples-1)).fit_transform(samples_std)
-                reducer = None
-        else:
-            reduced_space = samples_std
-    
-        # --- Step 3: Mode Detection via HDBSCAN ---
-        # Adaptive cluster size based on dataset scale
-        adj_min_cluster = max(2, int(n_samples * 0.01)) if n_samples > 10 else 2
-        clusterer = HDBSCAN(min_cluster_size=adj_min_cluster)
-        labels = clusterer.fit_predict(reduced_space)
-        
-        unique_labels = [l for l in np.unique(labels) if l != -1]
-        
-        # Default to single mode if no clusters are detected (e.g., small N or noise)
-        if len(unique_labels) == 0:
-            unique_labels = [0]
-            labels = np.zeros(n_samples)
-            
-        n_modes = len(unique_labels)
-        print(f"Detected {n_modes} mode(s) using {init_method} initialization.")
-    
-        # --- Step 4: Initial Mode Coordinate Extraction ---
-        initial_means = []
-        for label in unique_labels:
-            mask = (labels == label)
-            cluster_data_reduced = reduced_space[mask]
-            centroid_reduced = np.mean(cluster_data_reduced, axis=0)
-            
-            # Method A: Mathematical Inverse Mapping (UMAP-based)
-            if init_method == "inverse" and reducer is not None:
-                try:
-                    recon = reducer.inverse_transform(centroid_reduced.reshape(1, -1))
-                    # Rescale from standardized units to physical units
-                    initial_means.append(recon.flatten() * np.std(samples, axis=0) + np.mean(samples, axis=0))
-                    continue
-                except: 
-                    pass # Fallback to index if inverse_transform fails
-            
-            # Method B: Nearest Sample Index Tracking (Medoid approach)
-            dist = np.linalg.norm(cluster_data_reduced - centroid_reduced, axis=1)
-            global_idx = np.where(mask)[0][np.argmin(dist)]
-            initial_means.append(samples[global_idx])
-        
-        initial_means = np.array(initial_means)
-    
-        # --- Step 5: GMM Fitting in Original Parameter Space ---
-        # Strong regularization (reg_covar) prevents LinAlgErrors when N < D
-        reg_val = 1e-3 if n_samples < n_params else 1e-6
-        gmm = GaussianMixture(
-            n_components=n_modes, 
-            means_init=initial_means,
-            covariance_type="full",
-            reg_covar=reg_val 
-        )
-        gmm.fit(samples)
-    
-        # --- Step 6: Point and Interval Estimation via Precision Analysis ---
-        results = []
-        for k in range(n_modes):
-            mu_k = gmm.means_[k]
-            sigma_k = gmm.covariances_[k]
-            
-            # Calculate Pseudo-inverse to handle rank-deficient matrices in small N cases
-            # Precision Matrix K = Sigma^+
-            precision_k = np.linalg.pinv(sigma_k)
-            
-            # Marginal Error (Shadow on axis): sqrt(diag(Sigma))
-            marginal_std = np.sqrt(np.maximum(np.diag(sigma_k), 0))
-            
-            # Conditional Error (Chord through the mode): 1 / sqrt(diag(K))
-            # Clipping diag(K) to prevent division by zero or negative variance artifacts
-            k_diag = np.diag(precision_k)
-            k_diag[k_diag <= 0] = np.inf 
-            conditional_std = 1.0 / np.sqrt(k_diag)
-            
-            results.append({
-                "weight": gmm.weights_[k],
-                "point_estimate": mu_k,
-                "marginal_error": marginal_std,
-                "conditional_error": conditional_std
-            })
-    
-        return results
-    
     def by_gmm(self):
         return None
+
+
+class InversionRepeater:
     
-    def get_results(self, save_dir, by: str = "both"):
+    def __init__(
+            self,
+            inversion: bb.BayesianInversion,
+            sort_refs: list[str] | None = None,
+            save_dir: Path | str = "./results",
+        ):
+
+        self.inversion = inversion
         
-        save_dir = Path(save_dir)
+        def run(self, **kwargs):
+            self.inversion.run(**kwargs)
+            
+            postsamples, expanded_postsamples, acceptances, temperatures = organize_results(
+                self.inversion, self.sort_refs, self.save_dir
+            )
+
+            post_process = PostProcess(postsamples, True, self.save_dir)
+            post_process.est_dims()
+            post_process.by_arviz()
         
         return None
+    
     

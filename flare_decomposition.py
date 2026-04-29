@@ -14,82 +14,83 @@ data_path = Path.home() / "Dropbox/workspace/paper/Kang2026-sub/analysis/bu.txt"
 data = np.loadtxt(data_path, comments="#")
 
 # Data save path
-save_dir = Path.home() / "Dropbox/workspace/paper/Kang2026-sub/analysis/bu/test10"
-save_dir.mkdir(parents=True, exist_ok=True)
+save_dir = Path.home() / "Dropbox/workspace/paper/Kang2026-sub/analysis/bu/test13"
 
 # ================================
 # %% Sampling arguments preset
 # ++++++++++++++++++++++++++++++++
 
 # The limit number of model components
-n_dim_min = 1
+n_dim_min = 10
 n_dim_max = 30
 
 # The final number of posterior samples is
 # (The number of T=1 chains) * (n_iterations - brunin_iterations) / save_every.
-n_chains = 16
-n_iterations = 5000000
-burnin_iterations = 2000000
+n_chains = 20
+n_iterations = 2000000
+burnin_iterations = 1000000
 save_every = 1000
 verbose = True
-print_every = 100000
-sampler = bb.samplers.ParallelTempering(swap_every=100000)
+print_every = 500000
+
+#sampler = bb.samplers.SimulatedAnnealing(temperature_start=20)
+sampler = bb.samplers.ParallelTempering(temperature_max=5, swap_every=1000)
 
 # ================================
 # %% Parameters preset
 # ++++++++++++++++++++++++++++++++
 
-# Trans-dimensional space
+# Trans-dimensional parameter space
 trans_space_name = "flare"
 trans_param_names = ["t0", "f0", "tau", "s"]
 
-# Fixed-dimensional space
+# Fixed-dimensional parameters space
 fixed_space_name = "quiescent"
 fixed_param_names = ["fqs"]
 
-# Sort by sort_ref
+# Sort samples refered by sort_ref
 sort_refs = ["flare.t0"]
 
 period = data[-1, 0] - data[0, 0]
 time_gaps = (np.roll(data[:, 0], -1) - data[:, 0])[:-1]
-flux_gaps = (np.roll(data[:, 1], -1) - data[:, 1])[:-1]
+flux_gaps = np.abs((np.roll(data[:, 1], -1) - data[:, 1]))[:-1]
 
+# Parameters limitation
 trans_param_limits = [
     [data[:, 0].min(), data[:, 0].max()],
-    [0, data[:, 1].max()],
+    [flux_gaps.min(), data[:, 1].max()],
     [time_gaps.min(), period],
     [0.1, 5],
 ]
-
 fixed_param_limits = [
     [0, data[:, 1].min()],
 ]
+
+# Standard deviations of perturbation distribution
+trans_param_perturb_stds = np.diff(np.array(trans_param_limits)).flatten() * 0.005
+fixed_param_perturb_stds = np.diff(np.array(fixed_param_limits)).flatten() * 0.1
 
 # ================================
 # %% Prior preset
 # ++++++++++++++++++++++++++++++++
 
-# Relative stadard deviation to limit range for perturbation distribution.
-# The lower value, the more precies but longer sampling is proceeded.
-rel_std = 0.01
-
 trans_priors = []
-for name, lim in zip(trans_param_names, trans_param_limits):
+for name, lim, std in zip(trans_param_names, trans_param_limits, trans_param_perturb_stds):
     prior = bb.prior.UniformPrior(
         name=name,
         vmin=lim[0],
         vmax=lim[1],
-        perturb_std=(lim[1] - lim[0]) * rel_std,
+        perturb_std=std,
     )
     trans_priors.append(prior)
 
 fixed_priors = []
-for name, lim in zip(fixed_param_names, fixed_param_limits):
+for name, lim, std in zip(fixed_param_names, fixed_param_limits, fixed_param_perturb_stds):
     prior = bb.prior.UniformPrior(
         name=name,
         vmin=lim[0],
         vmax=lim[1],
-        perturb_std=(lim[1] - lim[0]) * rel_std,
+        perturb_std=std,
     )
     fixed_priors.append(prior)
 
@@ -172,11 +173,6 @@ inversion.run(
     print_every=print_every,
 )
 
-postsamples, acceptances, temperatures = orginize_results(inversion, sort_refs, save_dir)
-
-post_process = PostProcess(postsamples, True, save_dir)
-dim_mode_df = post_process.est_dims()
-arviz_results = post_process.by_arviz()
 
 '''
 # ================================
