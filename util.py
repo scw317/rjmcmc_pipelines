@@ -313,7 +313,7 @@ def organize_results(
         
         # Posterior samples
         postsample_dict = inversion.get_results_from_chains(chain)
-        # Note that some chains do not have any unity temperature samples.
+        # It is possible that some chains do not have any unity temperature samples.
         if postsample_dict:
             postsample_df = pd.DataFrame(postsample_dict)
             
