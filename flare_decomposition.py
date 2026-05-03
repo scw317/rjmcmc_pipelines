@@ -10,11 +10,11 @@ from util import InversionRepeater
 # ++++++++++++++++++++++++++++++++
 
 # Data path
-data_path = Path.home() / "Dropbox/workspace/paper/Kang2026-sub/analysis/bu.txt"
+data_path = Path.home() / "Dropbox/workspace/paper/Kang2026-sub/analysis/ovro.txt"
 data = np.loadtxt(data_path, comments="#")
 
 # Data save path
-save_dir = Path.home() / "Dropbox/workspace/paper/Kang2026-sub/analysis/bu/test16"
+save_dir = Path.home() / "Dropbox/workspace/paper/Kang2026-sub/analysis/ovro/test2"
 
 # ================================
 # %% Sampling arguments preset
@@ -22,13 +22,13 @@ save_dir = Path.home() / "Dropbox/workspace/paper/Kang2026-sub/analysis/bu/test1
 
 # The limit number of model components
 n_dim_min = 1
-n_dim_max = 30
+n_dim_max = 40
 
 # The final number of posterior samples is
 # (The number of T=1 chains) * (n_iterations - brunin_iterations) / save_every.
 n_chains = 16
-n_iterations = 500000
-burnin_iterations = 400000
+n_iterations = 2000000
+burnin_iterations = 1600000
 save_every = 1000
 verbose = True
 print_every = 100000
@@ -72,8 +72,8 @@ fixed_param_limits = [
 ]
 
 # Standard deviations of perturbation distribution
-trans_param_perturb_stds = np.diff(np.array(trans_param_limits)).flatten() * 0.005
-fixed_param_perturb_stds = np.diff(np.array(fixed_param_limits)).flatten() * 0.1
+trans_param_perturb_stds = np.diff(np.array(trans_param_limits)).flatten() * 0.001
+fixed_param_perturb_stds = np.diff(np.array(fixed_param_limits)).flatten() * 0.005
 
 trans_priors = []
 for name, lim, std in zip(trans_param_names, trans_param_limits, trans_param_perturb_stds):
@@ -176,31 +176,3 @@ inversion_repeater.run(
     print_every=print_every,
 )
 
-
-'''
-# ================================
-# %% Plot model
-# ++++++++++++++++++++++++++++++++
-
-data_path = save_dir / 
-
-plot_data = np.linspace(data[:, 0].min(), data[:, 0].max(), 1000)
-
-for dim in np.unique(n_dims):    
-    fig, ax = plt.subplots(dpi=300)
-    ax.errorbar(data[:, 0], data[:, 1], data[:, 2], ls="none", marker=".", color="black", label="Data")
-    mean, median, lower, upper = est_results["estimates"][dim]["forward"]
-    ax.plot(data[:, 0], mean, lw=1.5, color="red", label="Mean forward")
-    ax.plot(data[:, 0], median, lw=1, color="orange", label="Median forward")
-    ax.fill_between(data[:, 0], lower, upper, color="red", alpha=0.3, label=r"$1\sigma$ CI")
-    model_val = model_func(
-        plot_data,
-        *[est_results["estimates"][dim][tn][0][..., np.newaxis] for t, tn in enumerate(trans_param_names)],
-    ) + est_results["estimates"]["fqs"][0]
-    ax.plot(plot_data, model_val.T, lw=0.5, color="violet")
-    ax.legend()
-    ax.set_xlabel("MJD")
-    ax.set_ylabel("Flux density [Jy]")
-    ax.set_title(f"Data and model plot (dim={dim})")
-    fig.savefig(save_dir / f"model_{dim}.png")
-'''

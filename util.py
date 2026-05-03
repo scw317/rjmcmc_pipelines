@@ -702,12 +702,12 @@ class InversionRepeater:
         self.run_kwargs.update(kwargs)
         self.inversion.run(**self.run_kwargs)
         
-    def process(self):
+    def process(self, stack_chains):
         postsamples = organize_results(
             self.inversion, self.sort_refs, self.save_dir
         )
         post_process = PostProcess(postsamples, self.save_dir)
         post_process.est_dims()
-        post_process.by_arviz(False)
+        post_process.by_arviz(stack_chains)
 
     
