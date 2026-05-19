@@ -721,7 +721,7 @@ class InversionHandler:
                 parameterization=self.inversion.parameterization,
                 log_likelihood=self.inversion.log_likelihood,
                 n_chains=len(self.current_states),
-                walker_starting_states=self.currunt_states,
+                walkers_starting_states=self.current_states,
             )
             self.inversion.run(**self.run_kwargs)
             

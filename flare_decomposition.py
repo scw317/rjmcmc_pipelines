@@ -60,8 +60,8 @@ n_dim_max = 30
 # The final number of posterior samples is
 # (The number of T=1 chains) * (n_iterations - brunin_iterations) / save_every.
 n_chains = 16
-n_iterations = 1000000
-burnin_iterations = 900000
+n_iterations =1200000
+burnin_iterations = 1000000
 save_every = 1000
 verbose = True
 print_every = 100000
@@ -92,7 +92,7 @@ sort_refs = ["flare.t0"]
 trans_param_limits = [
     [-1, 1],
     [errors_normalized.min(), values_normalized.max()],
-    [0.01, 0.5],
+    [0.001, 0.5],
     [0.1, 5],
 ]
 # Fixed-dimensional parameters limitation
@@ -101,8 +101,8 @@ fixed_param_limits = [
 ]
 
 # Standard deviations of perturbation distribution
-trans_param_perturb_stds = np.diff(np.array(trans_param_limits)).flatten() * 0.001
-fixed_param_perturb_stds = np.diff(np.array(fixed_param_limits)).flatten() * 0.005
+trans_param_perturb_stds = np.diff(np.array(trans_param_limits)).flatten() * 0.002
+fixed_param_perturb_stds = np.diff(np.array(fixed_param_limits)).flatten() * 0.04
 
 trans_priors = []
 for name, lim, std in zip(trans_param_names, trans_param_limits, trans_param_perturb_stds):
@@ -151,7 +151,7 @@ parameterization.initialize()
 
 def model_func(t, t0, f0, tau, s):
     x = np.clip((t - t0) / tau, -2**6, 2**6) # Clipping to prevent overflow
-    return 2 * f0 / (np.exp(-x) + np.exp(x / s) + 2**-48)
+    return 2 * f0 / (np.exp(-x) + np.exp(x / s) + 2**-60)
     
 
 def fwd_func(state):
