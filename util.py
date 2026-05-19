@@ -367,6 +367,8 @@ class PostProcess:
         None
         """
         self.save_dir = Path(save_dir)
+        if not self.save_dir.exists():
+            self.save_dir.mkdir(parents=True)
         self.postsamples = postsamples
         self.get_schema()
     
