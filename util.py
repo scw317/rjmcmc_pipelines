@@ -739,7 +739,6 @@ class InversionHandler:
         
         # Write current states as pickle files
         save_path = get_unique_path(self.save_dir / "states.pkl")
-        save_path = get_unique_path(self.save_dir / save_path)
         with open(save_path, "wb") as f:
             pickle.dump(self.current_states, f, protocol=pickle.HIGHEST_PROTOCOL)
     

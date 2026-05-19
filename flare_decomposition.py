@@ -55,11 +55,11 @@ with open(save_dir / "normalize_info.csv", mode="w", newline="", encoding="utf-8
 
 # The limit number of model components
 n_dim_min = 1
-n_dim_max = 40
+n_dim_max = 30
 
 # The final number of posterior samples is
 # (The number of T=1 chains) * (n_iterations - brunin_iterations) / save_every.
-n_chains = 24
+n_chains = 16
 n_iterations = 1000000
 burnin_iterations = 900000
 save_every = 1000
