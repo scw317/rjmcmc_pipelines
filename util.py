@@ -482,9 +482,8 @@ class PostProcess:
                 fig, ax = plt.subplots()
                 ax.hist(dim, bins=bins_edges[d])
                 ax.set_xlabel(dim_col_names[d])
-                plt.show()
                 fig.savefig(get_unique_path(self.save_dir / f"{dim_col_names[d]}.png"))
-                plt.close(fig)
+                plt.close()
             
             # Dimension distribution dataframe
             dim_df = pd.DataFrame({"dim": uniques, "count": counts})
@@ -533,6 +532,7 @@ class PostProcess:
                     az.plot_dist(idata, var_names=param).savefig(arviz_save_dir / f"post_dim{dims}_{param}.png")
                     az.plot_trace(idata, var_names=param).savefig(arviz_save_dir / f"trace_dim{dims}_{param}.png")
                     az.plot_autocorr(idata, var_names=param).savefig(arviz_save_dir / f"autocorr_dim{dims}_{param}.png")
+                plt.close()
                 
         return results
 

@@ -203,5 +203,6 @@ inversion_handler.run(
     save_every=save_every,
     verbose=verbose,
     print_every=print_every,
+    parallel_config={"n_jobs": -1, "verbose": 1}
 )
 
