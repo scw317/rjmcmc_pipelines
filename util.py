@@ -1,3 +1,5 @@
+import csv
+import pickle
 from pathlib import Path
 
 import arviz as az
@@ -340,10 +342,10 @@ def organize_results(
     
     if save_dir:
         save_dir.mkdir(parents=True, exist_ok=True)
-        postsamples.to_parquet(str(get_unique_path(Path(save_dir) / "postamples.parquet")), engine="pyarrow", compression="zstd")
-        expanded_postsamples.to_csv(str(get_unique_path(Path(save_dir) / "expanded_postamples.csv")))
-        acceptances.to_csv(str(get_unique_path(Path(save_dir) / "acceptances.csv")))
-        temperatures.to_csv(str(get_unique_path(Path(save_dir) / "temperatures.csv")))
+        postsamples.to_parquet(get_unique_path(Path(save_dir) / "postamples.parquet"), engine="pyarrow", compression="zstd")
+        expanded_postsamples.to_csv(get_unique_path(Path(save_dir) / "expanded_postamples.csv"))
+        acceptances.to_csv(get_unique_path(Path(save_dir) / "acceptances.csv"))
+        temperatures.to_csv(get_unique_path(Path(save_dir) / "temperatures.csv"))
     
     return postsamples
 
@@ -365,7 +367,6 @@ class PostProcess:
         None
         """
         self.save_dir = Path(save_dir)
-        self.save_dir.mkdir(parents=True, exist_ok=True)
         self.postsamples = postsamples
         self.get_schema()
     
@@ -453,7 +454,7 @@ class PostProcess:
         
         return arviz_dict_by_dims
     
-    def est_dims(self) -> pd.DataFrame:
+    def est_dims(self, do_plot: bool = True) -> pd.DataFrame:
         dim_col_names = self.schema.loc[self.schema["cat"]=="dim", "col_name"].tolist()
         dim_cols = self.postsamples[dim_col_names].values  # Shape: (samples, spaces)
         
@@ -477,26 +478,27 @@ class PostProcess:
             uniques, counts = np.unique(dim, return_counts=True)
             
             # Dimensions histogram
-            fig, ax = plt.subplots()
-            ax.hist(dim, bins=bins_edges[d])
-            ax.set_xlabel(dim_col_names[d])
-            plt.show()
-            fig.savefig(str(get_unique_path(self.save_dir / f"{dim_col_names[d]}.png")))
-            plt.close(fig)
+            if do_plot:
+                fig, ax = plt.subplots()
+                ax.hist(dim, bins=bins_edges[d])
+                ax.set_xlabel(dim_col_names[d])
+                plt.show()
+                fig.savefig(get_unique_path(self.save_dir / f"{dim_col_names[d]}.png"))
+                plt.close(fig)
             
             # Dimension distribution dataframe
             dim_df = pd.DataFrame({"dim": uniques, "count": counts})
-            dim_df.to_csv(str(get_unique_path(self.save_dir / f"{dim_col_names[d]}.csv")))
+            dim_df.to_csv(get_unique_path(self.save_dir / f"{dim_col_names[d]}.csv"))
             
             # Update the marginal mode to the all space dimensions dataframe
             dim_mode_dict[dim_col_names[d]].append(uniques[np.argmax(counts)])
         
         dim_mode_df = pd.DataFrame(dim_mode_dict)
-        dim_mode_df.to_csv(str(get_unique_path(self.save_dir / "dim_mode.csv")))
+        dim_mode_df.to_csv(get_unique_path(self.save_dir / "dim_mode.csv"))
         
         return dim_mode_df
                         
-    def by_arviz(self, stack_chains: bool = True) -> dict:
+    def by_arviz(self, stack_chains: bool = True, do_plot: bool = True) -> dict:
         """Get estimates and statistics by arviz library."""
         samples_by_dims, sample_schema = self.to_array(
             stack_chains=stack_chains, concat_params=False, to_3d=True
@@ -523,18 +525,21 @@ class PostProcess:
             
             # Save concatenated dataframe with estimates and statistics
             summary_df = pd.concat((mean_summary_df, median_summary_df, mode_series), axis=1)
-            summary_df.to_csv(str(arviz_save_dir / f"summary_dim{dims}.csv"))
+            summary_df.to_csv(arviz_save_dir / f"summary_dim{dims}.csv")
             
             # Save posterior, trace, and autocorrelation plots
-            for param in list(idata.posterior.data_vars):
-                az.plot_dist(idata, var_names=param).savefig(str(arviz_save_dir / f"post_dim{dims}_{param}.png"))
-                az.plot_trace(idata, var_names=param).savefig(str(arviz_save_dir / f"trace_dim{dims}_{param}.png"))
-                az.plot_autocorr(idata, var_names=param).savefig(str(arviz_save_dir / f"autocorr_dim{dims}_{param}.png"))
+            if do_plot:
+                for param in list(idata.posterior.data_vars):
+                    az.plot_dist(idata, var_names=param).savefig(arviz_save_dir / f"post_dim{dims}_{param}.png")
+                    az.plot_trace(idata, var_names=param).savefig(arviz_save_dir / f"trace_dim{dims}_{param}.png")
+                    az.plot_autocorr(idata, var_names=param).savefig(arviz_save_dir / f"autocorr_dim{dims}_{param}.png")
                 
         return results
 
     def to_gmm(self) -> dict[tuple[int, ...] | None, np.ndarray]:
         """Convert self.postsamples into 2d arrays by combinations of dimensions.
+        
+        #!!! UNDEVELOPED.
         
         Returns
         -------
@@ -564,6 +569,7 @@ class PostProcess:
         return arrays_by_dims
 
     def by_gmm(self):
+        """#!!! UNDEVELOPED."""
         return None
     
     def to_array(self, stack_chains, concat_params, to_3d) -> tuple[dict, list]:
@@ -681,8 +687,8 @@ class PostProcess:
         return sample_arrays_by_dims, sample_array_schema
 
 
-class InversionRepeater:
-    """Continue inversions following the previous state."""
+class InversionHandler:
+    """Handle Bayesian inversion."""
     
     def __init__(
             self,
@@ -694,20 +700,60 @@ class InversionRepeater:
         self.sort_refs = sort_refs
         self.save_dir = Path(save_dir)
         
+        # States as checkpoint to run
+        self.current_states = None
+        
         # Arguments for inversion.run
         self.run_kwargs = {}
         
     def run(self, **kwargs):
+        """Run new inversion or continue from specific states."""
         # Update shared configuration
         self.run_kwargs.update(kwargs)
-        self.inversion.run(**self.run_kwargs)
         
-    def process(self, stack_chains):
+        # Start from new states
+        if self.current_states is None:
+            self.inversion.run(**self.run_kwargs)
+            
+        # Start from current states
+        else:
+            self.inversion = bb.BayesianInversion(
+                parameterization=self.inversion.parameterization,
+                log_likelihood=self.inversion.log_likelhood,
+                n_chains=len(self.current_states),
+                walker_starting_states=self.currunt_states,
+            )
+            self.inversion.run(**self.run_kwargs)
+            
+        # Save running keyword arguments
+        save_path = get_unique_path(self.save_dir / "run_kwargs.csv")
+        with open(save_path, mode="w", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f)
+            for key, value in self.run_kwargs.items():
+                writer.writerow([key, value])
+            
+    def save_states(self):
+        """Save states as a attribute and a pickle file."""
+        # Extract current states of Markov chains
+        self.current_states = [chain.current_state for chain in self.inversion.chains]
+        
+        # Write current states as pickle files
+        save_path = get_unique_path(self.save_dir / "states.pkl")
+        save_path = get_unique_path(self.save_dir / save_path)
+        with open(save_path, "wb") as f:
+            pickle.dump(self.current_states, f, protocol=pickle.HIGHEST_PROTOCOL)
+    
+    def load_states(self, file_path: Path | str):
+        """Load states from a pickle file."""
+        with open(file_path, "rb") as f:
+            self.current_states = pickle.load(f)
+        
+    def process(self, stack_chains: bool, do_plot: bool = True):
+        """Post process and get results."""
         postsamples = organize_results(
             self.inversion, self.sort_refs, self.save_dir
         )
         post_process = PostProcess(postsamples, self.save_dir)
-        post_process.est_dims()
-        post_process.by_arviz(stack_chains)
+        post_process.est_dims(do_plot)
+        post_process.by_arviz(stack_chains, do_plot)
 
-    

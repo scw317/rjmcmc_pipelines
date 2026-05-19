@@ -3,13 +3,10 @@ channels:
   - conda-forge
   - defaults
 dependencies:
-  - python>=3.9,<3.13
+  - python>=3.9
   - arviz
   - bayesbay
   - matplotlib
   - numpy
   - pandas
-  - pyarrow
-  - scikit-learn
   - scipy
-  - umap-learn
