@@ -4,3 +4,4 @@
 
 0.0.1 (TBD)
 - Add plt.close() after all plottings
+- Change all np.newaxis to None
