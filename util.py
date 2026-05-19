@@ -122,7 +122,7 @@ def sort_and_match_array(
     # Sort along axis=1 by ref_idx in axis=2
     if ref_idx is not None:
         sort_idxs = np.argsort(array[..., ref_idx], axis=1)  # Shape: (N, K)
-        array = np.take_along_axis(array, sort_idxs[..., np.newaxis], axis=1)
+        array = np.take_along_axis(array, sort_idxs[..., None], axis=1)
     
     if not do_match:
         return array
@@ -447,7 +447,7 @@ class PostProcess:
                 if len(group) == 0:
                     continue
                 param_arrays = {
-                    param: np.stack(group[param].values)[np.newaxis, ...] 
+                    param: np.stack(group[param].values)[None, ...] 
                     for param in param_col_names
                 }
                 arviz_dict_by_dims[dims] = param_arrays
@@ -676,13 +676,13 @@ class PostProcess:
         # Make the shape {(dims,): array(1, samples, all params)}.
         if to_3d and (not stack_chains) and concat_params:
             for key, val in sample_arrays_by_dims.items():
-                sample_arrays_by_dims[key] = val[np.newaxis, ...]
+                sample_arrays_by_dims[key] = val[None, ...]
                 
         # Make the shape {(dims,): {param: array(1, samples, param)}}
         if to_3d and (not stack_chains) and (not concat_params):
             for dim_key, in_dict in sample_arrays_by_dims.items():
                 for key, val in in_dict.items():
-                    sample_arrays_by_dims[dim_key][key] = val[np.newaxis, ...]
+                    sample_arrays_by_dims[dim_key][key] = val[None, ...]
         
         return sample_arrays_by_dims, sample_array_schema
 

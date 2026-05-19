@@ -37,16 +37,16 @@ values_offset = 0
 values_normalized = (values - values_offset) / values_scale
 errors_normalized = errors / values_scale
 
-normalize_info = {
+normalizing_info = {
     "domain_scale": domain_scale,
     "domain_offset": domain_offset,
     "values_scale": values_scale,
     "values_offset": values_offset,
 }
 
-with open(save_dir / "normalize_info.csv", mode="w", newline="", encoding="utf-8") as f:
+with open(save_dir / "normalizing_info.csv", mode="w", newline="", encoding="utf-8") as f:
     writer = csv.writer(f)
-    for key, value in normalize_info.items():
+    for key, value in normalizing_info.items():
         writer.writerow([key, value])
 
 # ================================
@@ -91,7 +91,7 @@ sort_refs = ["flare.t0"]
 # Trans-diemnsional parameters limitation
 trans_param_limits = [
     [-1, 1],
-    [errors_normalized.min(), values_normalized.max()],
+    [errors_normalized.max(), values_normalized.max()],
     [0.001, 0.5],
     [0.1, 5],
 ]
