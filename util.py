@@ -343,9 +343,9 @@ def organize_results(
     if save_dir:
         save_dir.mkdir(parents=True, exist_ok=True)
         postsamples.to_parquet(get_unique_path(Path(save_dir) / "postamples.parquet"), engine="pyarrow", compression="zstd")
-        expanded_postsamples.to_csv(get_unique_path(Path(save_dir) / "expanded_postamples.csv"))
-        acceptances.to_csv(get_unique_path(Path(save_dir) / "acceptances.csv"))
-        temperatures.to_csv(get_unique_path(Path(save_dir) / "temperatures.csv"))
+        expanded_postsamples.to_csv(get_unique_path(Path(save_dir) / "expanded_postamples.csv"), index=False)
+        acceptances.to_csv(get_unique_path(Path(save_dir) / "acceptances.csv"), index=False)
+        temperatures.to_csv(get_unique_path(Path(save_dir) / "temperatures.csv"), index=False)
     
     return postsamples
 
@@ -487,13 +487,13 @@ class PostProcess:
             
             # Dimension distribution dataframe
             dim_df = pd.DataFrame({"dim": uniques, "count": counts})
-            dim_df.to_csv(get_unique_path(self.save_dir / f"{dim_col_names[d]}.csv"))
+            dim_df.to_csv(get_unique_path(self.save_dir / f"{dim_col_names[d]}.csv"), index=False)
             
             # Update the marginal mode to the all space dimensions dataframe
             dim_mode_dict[dim_col_names[d]].append(uniques[np.argmax(counts)])
         
         dim_mode_df = pd.DataFrame(dim_mode_dict)
-        dim_mode_df.to_csv(get_unique_path(self.save_dir / "dim_mode.csv"))
+        dim_mode_df.to_csv(get_unique_path(self.save_dir / "dim_mode.csv"), index=False)
         
         return dim_mode_df
                         
@@ -524,7 +524,7 @@ class PostProcess:
             
             # Save concatenated dataframe with estimates and statistics
             summary_df = pd.concat((mean_summary_df, median_summary_df, mode_series), axis=1)
-            summary_df.to_csv(arviz_save_dir / f"summary_dim{dims}.csv")
+            summary_df.to_csv(arviz_save_dir / f"summary_dim{dims}.csv", index=False)
             
             # Save posterior, trace, and autocorrelation plots
             if do_plot:
@@ -727,10 +727,8 @@ class InversionHandler:
             
         # Save running keyword arguments
         save_path = get_unique_path(self.save_dir / "run_kwargs.csv")
-        with open(save_path, mode="w", newline="", encoding="utf-8") as f:
-            writer = csv.writer(f)
-            for key, value in self.run_kwargs.items():
-                writer.writerow([key, value])
+        run_kwargs_info = pd.Series(self.run_kwargs).to_frame(name="value")
+        run_kwargs_info.to_csv(save_path, index=True, index_label="key")
             
     def save_states(self):
         """Save states as a attribute and a pickle file."""
