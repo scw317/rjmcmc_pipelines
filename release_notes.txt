@@ -5,3 +5,4 @@
 0.0.1 (TBD)
 - Add plt.close() after all plottings
 - Change all np.newaxis to None
+- index=False for to_csv() except for ArviZ summary, normalizing_info, and run_kwargs_info

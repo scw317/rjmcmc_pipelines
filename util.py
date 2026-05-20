@@ -526,7 +526,7 @@ class PostProcess:
             
             # Save concatenated dataframe with estimates and statistics
             summary_df = pd.concat((mean_summary_df, median_summary_df, mode_series), axis=1)
-            summary_df.to_csv(arviz_save_dir / f"summary_dim{dims}.csv", index=False)
+            summary_df.to_csv(arviz_save_dir / f"summary_dim{dims}.csv")
             
             # Save posterior, trace, and autocorrelation plots
             if do_plot:
