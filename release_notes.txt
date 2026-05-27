@@ -13,5 +13,7 @@
 - Rename the parameter "stack_chains" to "concat_chains" which works inversely
 - Autosave states as run
 - Add logic to check validity of InversionHandler.run_kwargs for bayesbay.BaseBayesianInversion.run()
-- Solve label-switching by clustering instead of Hungarian matching (TBD)
-- Concatenate temperatures.csv and acceptances.csv (TBD)
+- Concatenate temperatures.csv and acceptances.csv
+- Concatenate before and current posterior samples optionally and save them in InversionHandler.process()
+- Bug fix for Hungarian matching logic in sort_and_match_array()
+- Revise chain draw trimming logic (TBD)

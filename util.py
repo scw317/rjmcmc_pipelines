@@ -1,7 +1,7 @@
 import pickle
 from inspect import signature
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Union
+from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
 import arviz as az
 import bayesbay as bb
@@ -65,8 +65,10 @@ def expand_array_columns(df: pd.DataFrame, use_multiindex: bool) -> pd.DataFrame
     df : pd.DataFrame
         Input dataframe which include list-like cell columns. 
     use_multiindex : bool
-        If True, creates hierarchical columns (e.g., ('col', 0), ('col', 1)). 
-        If False, creates flat names (e.g., 'col[0]', 'col[1]').
+        If True, create multi-index column dataframe.
+        Columns are hierarchical tuples. e.g., ('col', 0), ('col', 1). 
+        If False, creates single-index column dataframe.
+        Columns are flat names. e.g., 'col[0]', 'col[1]'.
         
     Returns
     -------
@@ -104,57 +106,51 @@ def expand_array_columns(df: pd.DataFrame, use_multiindex: bool) -> pd.DataFrame
 def sort_and_match_array(
         array: np.ndarray,
         ref_idx: Optional[int] = None,
-        do_match: bool = True,
         ) -> np.ndarray:
     """Sorting and Hungarian matching.
 
-    The sorting is performed along the axis=1 refered by one index in axis=2.
-    The Hungarian matching is based on standardized Euclidean metric.
+    The sorting is performed along the axis=-2 refered by one index in axis=-1.
+    Hungarian matching based on standardized Euclidean metric.
 
     Parameters
     ----------
     array : np.ndarray
         Shape: (N, K, P).
     ref_idx : int | None, optional
-        The sorting reference index of axis=2 for array. 
+        The sorting reference index of axis=-1 for array. 
         If None, no sorting. The default is None.
-    do_match : bool, optional
-        Determine to do matching or not. The default is True.
 
     Returns
     -------
     aligned_array : np.ndarray
         Sorted and matched.
     """
-    # Sort along axis=1 by ref_idx in axis=2
-    if ref_idx is not None:
-        sort_idxs = np.argsort(array[..., ref_idx], axis=1)  # Shape: (N, K)
-        array = np.take_along_axis(array, sort_idxs[..., None], axis=1)
+    # Reference sample for Hungarian matching
+    reference = np.median(array, axis=0)
     
-    if not do_match:
-        return array
-
+    # Sort the reference samples by ref_idx
+    if ref_idx is not None:
+        sort_idxs = np.argsort(reference[:, ref_idx])
+        reference = reference[sort_idxs]
+    
     # Calculate the effective variance for each index in axis=2. Shape: (P,)
     variances = (1.4826 * np.median(median_abs_deviation(array, axis=0), axis=0))**2
-    #variances = np.median(np.var(array, axis=0), axis=0)  # Not bad 
-    #variances = np.var(array, axis=(0, 1))  # Very unstable
+    #variances = np.median(np.var(array, axis=0), axis=0)  # Robust to outliner, relatively
+    #variances = np.var(array, axis=(0, 1))  # Sensitive to outliner
     variances[variances == 0] = 1.0  # Avoid zero-division
-    
-    # Reference for metric caluclation
-    reference = array[-1]
     
     aligned_array = np.zeros_like(array)
     
     # Perform Hungarian matching for each indexed array in axis=0
-    for i in range(array.shape[0]):
+    for i in range(len(array)):
         # Compute cost with standardized Euclidean metric between i-th sample and reference
         cost_matrix = cdist(array[i], reference, metric="seuclidean", V=variances)
         
         # Solve optimal assignment
-        row_dix, col_idx = linear_sum_assignment(cost_matrix)
+        _, col_idxs = linear_sum_assignment(cost_matrix)
 
         # Record the aligned i-th sample
-        aligned_array[i] = array[i][col_idx]
+        aligned_array[i, col_idxs] = array[i]
     
     return aligned_array
 
@@ -216,7 +212,7 @@ def align_parameters(
     Returns
     -------
     df : pd.DataFrame
-        Aligned.
+        Aligned postsamples.
     """
     df = postsamples  # Shallow copy
 
@@ -267,7 +263,9 @@ def align_parameters(
 
 def organize_results(
         inversion: bb.BayesianInversion,
-        sort_refs: Sequence[str], save_dir: Union[Path, str]
+        sort_refs: Sequence[str],
+        save_dir: Union[Path, str],
+        use_multiindex: bool,
     ) -> pd.DataFrame:
     """Organize sampling results and acceptance statistics.
     
@@ -278,6 +276,9 @@ def organize_results(
         Sorting reference parmaters for each trans-dimensional space.
     save_dir : Path | str
         Save directory path.
+    use_multiindex : bool
+        Determine using mulit-index for expanded_postsamples.
+        See more details in expand_array_columns().
         
     Retruns
     -------
@@ -285,22 +286,20 @@ def organize_results(
         Posterior samples.
         Only unity temperature samples are included.
     """
-    markov_chains = inversion.chains  #  bb.MarkovChain instance
+    markov_chains = inversion.chains  # bb.MarkovChain instance
     
-    # Get temperatures, acceptance statistics and posterior samples from markov_chains
-    temperature_dict = {"chain_id": [], "temperature": []}
+    # Get acceptance statistics and posterior samples from markov_chains
     acceptance_list = []
     postsample_list = []
     for chain in markov_chains:
-        temperature_dict["chain_id"].append(chain.id)
-        temperature_dict["temperature"].append(chain.temperature)
+        proposed_dict = {"chain_id": chain.id, "temperature": chain.temperature, "kind": "proposed"}
+        accepted_dict = proposed_dict.copy()
+        accepted_dict["kind"] = "accepted"
+        ratio_dict = proposed_dict.copy()
+        ratio_dict["kind"] = "ratio"
         
         # Acceptance statistics
         stats = chain.statistics
-        
-        proposed_dict = {"chain_id": chain.id, "kind": "proposed"}
-        accepted_dict = {"chain_id": chain.id, "kind": "accepted"}
-        ratio_dict = {"chain_id": chain.id, "kind": "ratio"}
         
         # The total numbers of proposed and accepted samples
         proposed_dict["total"] = stats["n_proposed_models_total"]
@@ -330,8 +329,8 @@ def organize_results(
             postsample_df = pd.concat((chain_id_col, postsample_df), axis=1)
             
             postsample_list.append(postsample_df)  
-        
-    temperatures = pd.DataFrame(temperature_dict)
+    
+    # Concatenate multiple chains results
     acceptances = pd.concat(acceptance_list, ignore_index=True)
     postsamples = pd.concat(postsample_list, ignore_index=True)
     
@@ -339,15 +338,8 @@ def organize_results(
     schema = get_column_schema(postsamples)
     postsamples = align_parameters(postsamples, schema, sort_refs)
     
-    # Column-wise expansion by decomposing multi-dimension parameter columns
-    expanded_postsamples = expand_array_columns(postsamples, use_multiindex=True)
-    
     if save_dir:
-        save_dir.mkdir(parents=True, exist_ok=True)
-        postsamples.to_parquet(get_unique_path(Path(save_dir) / "postamples.parquet"), engine="pyarrow", compression="zstd")
-        expanded_postsamples.to_csv(get_unique_path(Path(save_dir) / "expanded_postamples.csv"), index=False)
         acceptances.to_csv(get_unique_path(Path(save_dir) / "acceptances.csv"), index=False)
-        temperatures.to_csv(get_unique_path(Path(save_dir) / "temperatures.csv"), index=False)
     
     return postsamples
 
@@ -355,7 +347,7 @@ def organize_results(
 class PostProcess:
     """Process and analyze posterior sampling results."""
     
-    def __init__(self, postsamples: pd.DataFrame, save_dir: Union[Path, str] = "./results"):
+    def __init__(self, postsamples: pd.DataFrame, save_dir: Union[Path, str] = "./results") -> None:
         """
         Parameters
         ----------
@@ -368,10 +360,10 @@ class PostProcess:
         -------
         None
         """
+        self.postsamples = postsamples
         self.save_dir = Path(save_dir)
         if not self.save_dir.exists():
             self.save_dir.mkdir(parents=True)
-        self.postsamples = postsamples
         self.get_schema()
     
     def get_schema(self) -> pd.DataFrame:
@@ -424,7 +416,7 @@ class PostProcess:
         
         return dim_mode_df
     
-    def to_arviz(self, concat_chains: bool) -> dict:
+    def to_arviz(self, concat_chains: bool) -> Dict[Optional[Tuple[int, ...]], Dict[str, np.ndarray]]:
         """Convert self.postsamples into compatible form to az.from_dict.
         
         Parameters
@@ -434,10 +426,9 @@ class PostProcess:
         
         Returns
         -------
-        sample_arrays_by_dims : dict
+        sample_arrays_by_dims : Dict[Tuple[int, ...] | None, Dict[str, np.ndarray]]
             Shape: {(dim, ...): {param: (chains, draws, params)}}.
-            If any trans-dimensional space does not exist,
-            Instead of (dim, ...), None goes in.
+            None goes in instead of (dim, ...) if all spaces are fixed-dimensional.
         """
         df = self.postsamples
         schema = self.schema
@@ -473,24 +464,24 @@ class PostProcess:
                 # Count draws per chain_id
                 counts = group["chain_id"].value_counts().sort_values(ascending=False)
                 unique_ids = counts.index.values
-                n_draws = counts.values
+                draws_counts = counts.values
                 
-                # Find the optimal number of chains to keep.
+                # Find the number of chains to keep, which maximize sample volume.
                 # Total sample volume = (number of chains) * (min draws among them).
-                # Since n_draws is sorted descending, min draw for i chains is n_draws[i-1].
-                candidate_volumes = np.arange(1, len(n_draws) + 1) * n_draws
+                # Since draw_counts is sorted descending, min draw for i-th chains is draw_counts[i-1].
+                candidate_volumes = np.arange(1, len(unique_ids) + 1) * draws_counts
                 
                 # The optimal index maximize sample volume.
                 opt_idx = np.argmax(candidate_volumes)
                     
                 best_n_chains = opt_idx + 1
-                best_min_draw = n_draws[opt_idx]
+                best_min_draw = draws_counts[opt_idx]
                 best_chain_ids = unique_ids[:best_n_chains]
                 
-                # Filter and re-sort group to include only optimal chains
+                # Filter and re-sort group to include only best chain ids
                 filtered_group = group[group["chain_id"].isin(best_chain_ids)].sort_values("chain_id")
                 
-                # Trimming using descending counter
+                # Trimming draws using descending counter
                 # We must re-calculate counts for the filtered/sorted group
                 _, final_counts = np.unique(filtered_group["chain_id"].values, return_counts=True)
                 descending_counter = np.concatenate([np.arange(c)[::-1] for c in final_counts])
@@ -546,7 +537,7 @@ class PostProcess:
 
 
 class InversionHandler:
-    """Handle Bayesian inversion."""
+    """Handle Bayesian inversion using Bayesbay."""
     
     def __init__(
             self,
@@ -554,15 +545,34 @@ class InversionHandler:
             sort_refs: Optional[Sequence[str]] = None,
             save_dir: Union[Path, str] = "./results",
         ):
+        """
+        Parameters
+        ----------
+        inversion : bb.BayesianInversion
+            bayesbay.BaseBayesianInversion instance.
+        sort_refs : Sequence[str] | None
+            Parameter name to be reference of sort.
+        save_dir : Path | str, optional
+            Results save directory. The default is './results'.
+        
+        Returns
+        -------
+        None
+        """
         self.inversion = inversion
         self.sort_refs = sort_refs
         self.save_dir = Path(save_dir)
+        if not self.save_dir.exists():
+            self.save_dir.mkdir(parents=True)
         
         # States as checkpoint to run
         self.current_states: Optional[List[List[bb.State]]] = None
         
         # Parameters for inversion.run()
         self.run_kwargs: Dict[str, Any] = {}
+        
+        # Posterior samples to be analyzed
+        self.postsamples: Optional[pd.DataFrmae] = None
     
     def check_run_kwargs(self):
         """Check whether unexpected keyword arguments exist in self.run_kwargs."""
@@ -578,6 +588,21 @@ class InversionHandler:
                 f"\n{unexpected_keys}"
             )
     
+    def save_states(self):
+        """Save states by an attribute and a pickle file."""
+        # Extract current states of Markov chains
+        self.current_states = [chain.current_state for chain in self.inversion.chains]
+        
+        # Write current states as a pickle file
+        save_path = get_unique_path(self.save_dir / "states.pkl")
+        with open(save_path, "wb") as f:
+            pickle.dump(self.current_states, f, protocol=pickle.HIGHEST_PROTOCOL)
+    
+    def load_states(self, file_path: Union[Path, str]):
+        """Load states from a pickle file."""
+        with open(file_path, "rb") as f:
+            self.current_states = pickle.load(f)
+    
     def run(self, **kwargs):
         """Run new inversion or continue from specific states."""
         # Check whetehr self.run_kwargs is valid
@@ -585,7 +610,7 @@ class InversionHandler:
         # Update inversion.run parameters
         self.run_kwargs.update(kwargs)
         
-        # Re-define inversion instance with self.current_states
+        # Re-define self.inversion with self.current_states
         if self.current_states is not None:
             self.inversion = bb.BayesianInversion(
                 parameterization=self.inversion.parameterization,
@@ -603,27 +628,52 @@ class InversionHandler:
     
         # Save the current states of Markov chains.
         self.save_states()
-            
-    def save_states(self):
-        """Save states by an attribute and a pickle file."""
-        # Extract current states of Markov chains
-        self.current_states = [chain.current_state for chain in self.inversion.chains]
-        
-        # Write current states as a pickle file
-        save_path = get_unique_path(self.save_dir / "states.pkl")
-        with open(save_path, "wb") as f:
-            pickle.dump(self.current_states, f, protocol=pickle.HIGHEST_PROTOCOL)
     
-    def load_states(self, file_path: Union[Path, str]):
-        """Load states from a pickle file."""
-        with open(file_path, "rb") as f:
-            self.current_states = pickle.load(f)
-
-    def process(self, concat_chains: bool, do_arviz_plot: bool = False):
-        """Post process and get results."""
-        postsamples = organize_results(self.inversion, self.sort_refs, self.save_dir)
+    def process(
+            self,
+            concat_samples: bool,
+            concat_chains: bool,
+            do_arviz_plot: bool = False,
+            use_multiindex: bool = False,
+        ) -> None:
+        """Post process and get results.
         
+        Parameters
+        ----------
+        concat_samples : bool
+            Concatenate posterior samples.
+        concat_chains : bool
+            Concatenate chains.
+        do_arviz_plot : bool, optional
+            Do plot ArviZ plots and save them. The default is False.
+        use_multiindex : bool, optional
+            When saving posterior samples as CSV, use multi-index.
+            See more details in expand_array_columns(). The default is False.
+            
+        Returns
+        -------
+        None
+        """
+        postsamples = organize_results(self.inversion, self.sort_refs, self.save_dir, use_multiindex)
+        
+        if concat_samples and self.postsamples is not None:
+            self.postsamples = pd.concat((self.postsamples, postsamples), ignore_index=True)
+        else:
+            self.postsamples = postsamples
+        
+        # Processing posterior samples
         post_process = PostProcess(postsamples, self.save_dir)
         post_process.est_dims(do_plot=True)
         post_process.by_arviz(concat_chains, do_arviz_plot)
+        
+        # Column-wise expansion by decomposing multi-dimension parameter columns
+        expanded_postsamples = expand_array_columns(self.postsamples, use_multiindex)
+        
+        # Save posterior samples
+        if self.save_dir:
+            self.postsamples.to_parquet(
+                get_unique_path(Path(self.save_dir) / "postamples.parquet"),
+                engine="pyarrow", compression="zstd"
+            )
+            expanded_postsamples.to_csv(get_unique_path(Path(self.save_dir) / "expanded_postamples.csv"), index=False)
 
