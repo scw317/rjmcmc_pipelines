@@ -1,6 +1,7 @@
-import csv
 import pickle
+from inspect import signature
 from pathlib import Path
+from typing import Any, Dict, List, Optional, Sequence, Union
 
 import arviz as az
 import bayesbay as bb
@@ -12,11 +13,15 @@ from scipy.optimize import linear_sum_assignment
 from scipy.spatial.distance import cdist
 from scipy.stats import median_abs_deviation
 
+# Signature keyword arguments of bb.BayesianInversion.run()
+BB_RUN_SIGNATURE_KEYS = list(signature(bb.BayesianInversion.run).parameters.keys())
 
-def get_unique_path(path: Path | str, abort_count: int = 1000) -> Path:
+
+def get_unique_path(path: Union[Path, str], abort_count: int = 1000) -> Path:
     """Get a unique path by appending an incrementing number if the file exists.
     
-    Format: {path}_{num}.{suffix} but {suffix} is not necessary.
+    Change f'{parent}/{stem}.{suffix}' to f'{parent}/{stem}_{counter}.{suffix}'.
+    {suffix} is not necessary.
     
     Parameters
     ----------
@@ -48,6 +53,7 @@ def get_unique_path(path: Path | str, abort_count: int = 1000) -> Path:
     # Construct new path with random number when counter reach abort_count
     counter = np.random.randint(abort_count + 1, 100 * abort_count)
     new_path = parent / f"{stem}_{counter}{suffix}"
+    
     return new_path
 
 
@@ -58,7 +64,7 @@ def expand_array_columns(df: pd.DataFrame, use_multiindex: bool) -> pd.DataFrame
     ----------
     df : pd.DataFrame
         Input dataframe which include list-like cell columns. 
-    use_multiindex :
+    use_multiindex : bool
         If True, creates hierarchical columns (e.g., ('col', 0), ('col', 1)). 
         If False, creates flat names (e.g., 'col[0]', 'col[1]').
         
@@ -97,7 +103,7 @@ def expand_array_columns(df: pd.DataFrame, use_multiindex: bool) -> pd.DataFrame
 
 def sort_and_match_array(
         array: np.ndarray,
-        ref_idx: int | None = None,
+        ref_idx: Optional[int] = None,
         do_match: bool = True,
         ) -> np.ndarray:
     """Sorting and Hungarian matching.
@@ -110,7 +116,8 @@ def sort_and_match_array(
     array : np.ndarray
         Shape: (N, K, P).
     ref_idx : int | None, optional
-        The sorting reference index of axis=2. The default is None.
+        The sorting reference index of axis=2 for array. 
+        If None, no sorting. The default is None.
     do_match : bool, optional
         Determine to do matching or not. The default is True.
 
@@ -131,7 +138,7 @@ def sort_and_match_array(
     variances = (1.4826 * np.median(median_abs_deviation(array, axis=0), axis=0))**2
     #variances = np.median(np.var(array, axis=0), axis=0)  # Not bad 
     #variances = np.var(array, axis=(0, 1))  # Very unstable
-    variances[variances == 0] = 1.0  # Avoid division by zero
+    variances[variances == 0] = 1.0  # Avoid zero-division
     
     # Reference for metric caluclation
     reference = array[-1]
@@ -140,13 +147,13 @@ def sort_and_match_array(
     
     # Perform Hungarian matching for each indexed array in axis=0
     for i in range(array.shape[0]):
-        # Compute cost with standardized Euclidean metric between i-th array and reference
+        # Compute cost with standardized Euclidean metric between i-th sample and reference
         cost_matrix = cdist(array[i], reference, metric="seuclidean", V=variances)
         
         # Solve optimal assignment
         row_dix, col_idx = linear_sum_assignment(cost_matrix)
 
-        # Record the aligned i-th array
+        # Record the aligned i-th sample
         aligned_array[i] = array[i][col_idx]
     
     return aligned_array
@@ -164,7 +171,7 @@ def get_column_schema(postsamples: pd.DataFrame) -> pd.DataFrame:
     # Regex logic: 
     # field: Space or target names (everything before the last dot)
     # attr: Parameter or attribute names (after the last dot)
-    # This handles "{space}.{param}", "{space}.n_dimensions" and f"{target}.dpred".
+    # It handles column names like f"{space}.{param}", f"{space}.n_dimensions" and f"{target}.dpred".
     pattern = r"^(?P<field>.*)\.(?P<attr>.*)$"
     schema = pd.concat((schema, schema.str.extract(pattern)), axis=1)
     
@@ -193,7 +200,7 @@ def get_column_schema(postsamples: pd.DataFrame) -> pd.DataFrame:
 def align_parameters(
         postsamples: pd.DataFrame,
         schema: pd.DataFrame,
-        sort_refs: list[str] | None = None,
+        sort_refs: Optional[Sequence[str]] = None,
         ) -> pd.DataFrame:
     """Align parameters to solve the label-switching problem.
     
@@ -201,10 +208,10 @@ def align_parameters(
     ----------
     postsamples : pd.DataFrame
     schema : pd.DataFrame
-    sort_refs : list[str] | None, optional
+    sort_refs : Sequence[str] | None, optional
         Sorting reference parmaters for each trans-dimensional space.
         If it is None, not sorted. The default is None.
-        ["{space}.{param}", ...].
+        e.g., [f'{space}.{param}', ...].
     
     Returns
     -------
@@ -260,18 +267,17 @@ def align_parameters(
 
 def organize_results(
         inversion: bb.BayesianInversion,
-        sort_refs: list[str] | None = None,
-        save_dir: Path | str = "./results",
+        sort_refs: Sequence[str], save_dir: Union[Path, str]
     ) -> pd.DataFrame:
     """Organize sampling results and acceptance statistics.
     
     Parameters
     ----------
     inversion : bb.BayesianInversion
-    sort_refs: list[str] | None = None,
+    sort_refs : Sequence[str]
         Sorting reference parmaters for each trans-dimensional space.
-    save_dir : Path | str, optional
-        Save directory path. The default is './results'.
+    save_dir : Path | str
+        Save directory path.
         
     Retruns
     -------
@@ -319,10 +325,6 @@ def organize_results(
         if postsample_dict:
             postsample_df = pd.DataFrame(postsample_dict)
             
-            #!!! DEPRECATED: Add the acceptance ratio column to postsample_df
-            #acceptance_ratio_col = pd.Series(np.full(len(postsample_df), ratio_dict["total"]), name="acceptance_ratio")
-            #postsample_df = pd.concat((acceptance_ratio_col, postsample_df), axis=1)
-            
             # Add the chain ID column
             chain_id_col = pd.Series(np.full(len(postsample_df), chain.id), name="chain_id")
             postsample_df = pd.concat((chain_id_col, postsample_df), axis=1)
@@ -353,7 +355,7 @@ def organize_results(
 class PostProcess:
     """Process and analyze posterior sampling results."""
     
-    def __init__(self, postsamples: pd.DataFrame, save_dir: Path | str = "./results"):
+    def __init__(self, postsamples: pd.DataFrame, save_dir: Union[Path, str] = "./results"):
         """
         Parameters
         ----------
@@ -372,16 +374,63 @@ class PostProcess:
         self.postsamples = postsamples
         self.get_schema()
     
-    def get_schema(self):
+    def get_schema(self) -> pd.DataFrame:
         self.schema = get_column_schema(self.postsamples)
+
+    def est_dims(self, do_plot: bool) -> pd.DataFrame:
+        """Estimate the number of dimensions of parmeters.
+        
+        Basically, estimate the number of mixture model.
+        If several kinds of mixture models exist,
+        estimate each number of mixture model for each kind.
+        """
+        # Dimension column names like f"{space}.n_dimensions"
+        dim_col_names = self.schema.loc[self.schema["cat"]=="dim", "col_name"].tolist()
+        dim_cols = self.postsamples[dim_col_names].values  # Shape: (samples, spaces)
+        
+        # Dimensions bins edges for each space
+        bins_edges = [np.arange(np.min(col), np.max(col) + 2) - 0.5 for col in dim_cols.T]
+        # Multi-dimensional histogram to get joint mode of dimensions
+        hists, edges = np.histogramdd(dim_cols, bins=bins_edges)
+        # The index in hists which is the mode
+        joint_argmax = np.unravel_index(np.argmax(hists), hists.shape)
+        
+        # All space dimensions dataframe including joint and marginal modes 
+        dim_mode_dict = {"kind": ["joint", "marginal"]}
+        for d, arg in enumerate(joint_argmax):
+            dim_mode_dict[dim_col_names[d]] = [(edges[d][arg] + edges[d][arg + 1]) / 2]
+        
+        # Dimensions for each space
+        for d, dim in enumerate(dim_cols.T):
+            uniques, counts = np.unique(dim, return_counts=True)
+            
+            # Dimensions histogram
+            if do_plot:
+                fig, ax = plt.subplots()
+                ax.hist(dim, bins=bins_edges[d])
+                ax.set_xlabel(dim_col_names[d])
+                fig.savefig(get_unique_path(self.save_dir / f"{dim_col_names[d]}.png"))
+                plt.close()
+            
+            # Dimension distribution dataframe
+            dim_df = pd.DataFrame({"dim": uniques, "count": counts})
+            dim_df.to_csv(get_unique_path(self.save_dir / f"{dim_col_names[d]}.csv"), index=False)
+            
+            # Update the marginal mode to the all space dimensions dataframe
+            dim_mode_dict[dim_col_names[d]].append(uniques[np.argmax(counts)])
+        
+        dim_mode_df = pd.DataFrame(dim_mode_dict)
+        dim_mode_df.to_csv(get_unique_path(self.save_dir / "dim_mode.csv"), index=False)
+        
+        return dim_mode_df
     
-    def to_arviz(self, stack_chains: bool) -> dict:
+    def to_arviz(self, concat_chains: bool) -> dict:
         """Convert self.postsamples into compatible form to az.from_dict.
         
         Parameters
         ----------
-        stack_chains : bool
-            Determine to stack chains as a new axis.
+        concat_chains : bool
+            Determine to concatenate chains as a single chain.
         
         Returns
         -------
@@ -393,8 +442,10 @@ class PostProcess:
         df = self.postsamples
         schema = self.schema
         
-        dim_col_names = schema.loc[schema["cat"]=="dim", "col_name"].tolist()  # "{space}.n_dimensions"
-        param_col_names = schema.loc[schema["cat"].isin(["trans", "fixed"]), "col_name"].tolist()  # "{space}.{param}"
+        # Dimension column names like f"{space}.n_dimensions"
+        dim_col_names = schema.loc[schema["cat"]=="dim", "col_name"].tolist()  
+        # Parameter column names liek f"{space}.{param}"
+        param_col_names = schema.loc[schema["cat"].isin(["trans", "fixed"]), "col_name"].tolist()  
         
         # Group by dimensions if trans-dimensional spaces are exist.
         # If not, the original dataframe is the only group itself.
@@ -402,8 +453,19 @@ class PostProcess:
         
         arviz_dict_by_dims = {}
         
-        # If stacking chains have inhomogeneous draws, triming samples for each chain to be homogeneous.
-        if stack_chains:
+        # Treat all samples as one long chain (1, samples, params)
+        if concat_chains:
+            for dims, group in groups:
+                if len(group) == 0:
+                    continue
+                param_arrays = {
+                    param: np.stack(group[param].values)[None, ...] 
+                    for param in param_col_names
+                }
+                arviz_dict_by_dims[dims] = param_arrays
+                
+        # If chains have inhomogeneous draws, triming samples for each chain to be homogeneous.
+        else:
             for dims, group in groups:
                 if len(group) == 0:
                     continue
@@ -442,68 +504,12 @@ class PostProcess:
                     param_arrays[param] = data.reshape(best_n_chains, best_min_draw, -1)
                 
                 arviz_dict_by_dims[dims] = param_arrays
-                
-        else:
-            # Non-stacking logic: treat all samples as one long chain (1, total_draws, params)
-            for dims, group in groups:
-                if len(group) == 0:
-                    continue
-                param_arrays = {
-                    param: np.stack(group[param].values)[None, ...] 
-                    for param in param_col_names
-                }
-                arviz_dict_by_dims[dims] = param_arrays
         
         return arviz_dict_by_dims
     
-    def est_dims(self, do_plot: bool = True) -> pd.DataFrame:
-        dim_col_names = self.schema.loc[self.schema["cat"]=="dim", "col_name"].tolist()
-        dim_cols = self.postsamples[dim_col_names].values  # Shape: (samples, spaces)
-        
-        # Dimensions bins edges for each space
-        bins_edges = [
-            np.arange(np.min(col), np.max(col) + 2) - 0.5
-            for col in dim_cols.T
-        ]
-        # Multi-dimensional histogram to get joint mode of dimensions
-        hists, edges = np.histogramdd(dim_cols, bins=bins_edges)
-        # The index in hists which is the mode
-        joint_argmax = np.unravel_index(np.argmax(hists), hists.shape)
-        
-        # All space dimensions dataframe including joint and marginal modes 
-        dim_mode_dict = {"kind": ["joint", "marginal"]}
-        for d, arg in enumerate(joint_argmax):
-            dim_mode_dict[dim_col_names[d]] = [(edges[d][arg] + edges[d][arg + 1]) / 2]
-        
-        # Dimensions for each space
-        for d, dim in enumerate(dim_cols.T):
-            uniques, counts = np.unique(dim, return_counts=True)
-            
-            # Dimensions histogram
-            if do_plot:
-                fig, ax = plt.subplots()
-                ax.hist(dim, bins=bins_edges[d])
-                ax.set_xlabel(dim_col_names[d])
-                fig.savefig(get_unique_path(self.save_dir / f"{dim_col_names[d]}.png"))
-                plt.close()
-            
-            # Dimension distribution dataframe
-            dim_df = pd.DataFrame({"dim": uniques, "count": counts})
-            dim_df.to_csv(get_unique_path(self.save_dir / f"{dim_col_names[d]}.csv"), index=False)
-            
-            # Update the marginal mode to the all space dimensions dataframe
-            dim_mode_dict[dim_col_names[d]].append(uniques[np.argmax(counts)])
-        
-        dim_mode_df = pd.DataFrame(dim_mode_dict)
-        dim_mode_df.to_csv(get_unique_path(self.save_dir / "dim_mode.csv"), index=False)
-        
-        return dim_mode_df
-                        
-    def by_arviz(self, stack_chains: bool = True, do_plot: bool = True) -> dict:
-        """Get estimates and statistics by arviz library."""
-        samples_by_dims, sample_schema = self.to_array(
-            stack_chains=stack_chains, concat_params=False, to_3d=True
-        )
+    def by_arviz(self, concat_chains: bool, do_plot: bool) -> dict:
+        """Get estimates and statistics by ArviZ library."""
+        samples_by_dims = self.to_arviz(concat_chains=concat_chains)
         
         results = {}
         for dims, samples in samples_by_dims.items():
@@ -538,156 +544,6 @@ class PostProcess:
                 
         return results
 
-    def to_gmm(self) -> dict[tuple[int, ...] | None, np.ndarray]:
-        """Convert self.postsamples into 2d arrays by combinations of dimensions.
-        
-        #!!! UNDEVELOPED.
-        
-        Returns
-        -------
-        arrays_by_dims : dict[tuple[int, ...] | None, np.ndarray]
-            Shape: {(dim, ...): np.ndarray}.
-            If any trans-dimensional space does not exist,
-            Instead of (dim, ...), None goes in.
-        """
-        df = self.postsamples
-        schema = self.schema
-        
-        dim_col_names = schema.loc[schema["cat"]=="dim", "col_name"].tolist()  # "{space}.n_dimensions"
-        param_col_names = schema.loc[schema["cat"].isin(["trans", "fixed"]), "col_name"].tolist()  # "{space}.{param}"
-        
-        arrays_by_dims = {}
-        
-        # Group by dimensions if trans-dimensional spaces are exist.
-        # If not, the original dataframe is the only group itself.
-        groups = df.groupby(dim_col_names) if dim_col_names else [(None, df)]
-        
-        for dims, group in groups:
-            if len(group) == 0:
-                continue
-            array = np.concatenate([np.stack(group[param].values) for param in param_col_names], axis=1)
-            arrays_by_dims[dims] = array
-        
-        return arrays_by_dims
-
-    def by_gmm(self):
-        """#!!! UNDEVELOPED."""
-        return None
-    
-    def to_array(self, stack_chains, concat_params, to_3d) -> tuple[dict, list]:
-        """Convert self.postsamples into np.ndarray for each combination of dimensions.
-        
-        #!!! DEPRECATED: Separated into to_arviz and to_gmm methods.
-        
-        Parameters
-        ----------
-        stack_chains : bool
-            Stack chians as a new array axis.
-            If each chain has the different number of draws, trimming draws.
-            A draw is samples for each chain.
-        concat_params : bool
-            Concatenate parameters as a same array axis.
-        to_3d : bool
-            Arrays become 3d which is compatible to arviz.
-    
-        Returns
-        -------
-        sample_arrays_by_dims : dict[tuple[int, ...], np.ndarray]
-            The keys are combinations of dimensions.
-            The values are posterior samples arrays.
-        sample_array_schema : list[list[str]]
-            [["{space}.n_dimensions", ...], ["{space}.{param}", ...]].
-        
-        Notes
-        -----
-        For arviz, recommend stack_chains = True, concat_params = False, and to_3d = True. 
-        For GMM, recommend stack_chains = False, concat_params = True, and to_3d = False.
-        
-        Examples
-        --------
-        if stack_chains == True and concat_params == True:
-            sample_arrays_by_dims = {(dims,): array(chains, draws, all params)}.
-        if stack_chains == True and concat_params == False:
-            sample_arrays_by_dims = {(dims,): {param: array(chains, draws, param)}}.
-        if stack_chains == False and concat_params == True:
-            sample_arrays_by_dims = {(dims,): array(samples, all params)}.
-        if stack_chains == False and concat_params == False:
-            sample_arrays_by_dims = {(dims,): {param: array(samples, param)}.
-        """
-        df = self.postsamples
-        schema = self.schema
-        
-        dim_col_names = schema.loc[schema["cat"]=="dim", "col_name"].tolist()  # "{space}.n_dimensions"
-        param_col_names = schema.loc[schema["cat"].isin(["trans", "fixed"]), "col_name"].tolist()  # "{space}.{param}"
-        
-        # Group by dimensions if trans-dimensional spaces are exist.
-        # If not, the original dataframe is the only group itself.
-        groups = df.groupby(dim_col_names) if dim_col_names else [(None, df)]
-        
-        sample_array_schema = [dim_col_names, param_col_names]
-        sample_arrays_by_dims = {}  # {(dims,): array}
-        
-        # If stacking chains have inhomogeneous draws, triming samples for each chain to be homogeneous.
-        if stack_chains:
-            for dims, group in groups:
-                if len(group) == 0:
-                    continue
-                
-                group = group.sort_values("chain_id")
-                chain_ids = group["chain_id"].values
-                # Find all chain IDs and their sample (draw) numbers
-                unique_chain_ids, chain_id_counts = np.unique(chain_ids, return_counts=True)
-                # The minimum draw number of chains among all chain IDs
-                min_draw = np.min(chain_id_counts)
-                
-                # Counting each chain ID in descending order to trim front draws
-                # e.g., [3 2 1 0 2 1 0 4 3 2 1 0 ...] when chain_id_counts == [4 3 5 ...]
-                descending_counter = np.concatenate([np.arange(count)[::-1] for count in chain_id_counts])
-                # Masking False where descending counting exceeds the minimum
-                chain_mask = descending_counter < min_draw
-                
-                if concat_params:
-                    param_arrays = np.concatenate(
-                        [np.stack(group[param].values[chain_mask]) for param in param_col_names],  # Shape: [(samples, param)]
-                        axis=1,
-                    )  # Shape: (samples, all params)
-                    param_arrays = param_arrays.reshape(len(unique_chain_ids), min_draw, -1)  # Shape: (chains, draws, all params)
-                    
-                else:
-                    param_arrays = {
-                        param: np.stack(group[param].values[chain_mask]).reshape(len(unique_chain_ids), min_draw, -1)  # Shape: (chains, draws, param)
-                        for param in param_col_names
-                    }  # Shape: {param: (chains, draws, param)}
-                sample_arrays_by_dims[dims] = param_arrays
-        
-        else:
-            for dims, group in groups:
-                if len(group) == 0:
-                    continue
-                
-                if concat_params:
-                    param_arrays = np.concatenate(
-                        [np.stack(group[param].values) for param in param_col_names],  # Shape: [(samples, param)]
-                        axis=1,
-                    )  # Shape: (sampls, all params)
-                    
-                else:
-                    param_arrays = {param: np.stack(group[param].values) for param in param_col_names}  # Shape: {param: (samples, param)}
-                sample_arrays_by_dims[dims] = param_arrays
-        
-        # Make the shape {(dims,): array(1, samples, all params)}.
-        if to_3d and (not stack_chains) and concat_params:
-            for key, val in sample_arrays_by_dims.items():
-                sample_arrays_by_dims[key] = val[None, ...]
-                
-        # Make the shape {(dims,): {param: array(1, samples, param)}}
-        if to_3d and (not stack_chains) and (not concat_params):
-            for dim_key, in_dict in sample_arrays_by_dims.items():
-                for key, val in in_dict.items():
-                    sample_arrays_by_dims[dim_key][key] = val[None, ...]
-        
-        return sample_arrays_by_dims, sample_array_schema
-
 
 class InversionHandler:
     """Handle Bayesian inversion."""
@@ -695,64 +551,79 @@ class InversionHandler:
     def __init__(
             self,
             inversion: bb.BayesianInversion,
-            sort_refs: list[str] | None = None,
-            save_dir: Path | str = "./results",
+            sort_refs: Optional[Sequence[str]] = None,
+            save_dir: Union[Path, str] = "./results",
         ):
         self.inversion = inversion
         self.sort_refs = sort_refs
         self.save_dir = Path(save_dir)
         
         # States as checkpoint to run
-        self.current_states = None
+        self.current_states: Optional[List[List[bb.State]]] = None
         
-        # Arguments for inversion.run
-        self.run_kwargs = {}
-        
+        # Parameters for inversion.run()
+        self.run_kwargs: Dict[str, Any] = {}
+    
+    def check_run_kwargs(self):
+        """Check whether unexpected keyword arguments exist in self.run_kwargs."""
+        # Find unexpected keys in self.run_kwargs
+        unexpected_keys = []
+        for key in self.run_kwargs.keys():
+            if key not in BB_RUN_SIGNATURE_KEYS:
+                unexpected_keys.append(key)
+        # Raise and report a error        
+        if unexpected_keys:
+            raise TypeError(
+                "Unexpected keyword arguments for bayesbay.BayesianInversion.run():"
+                f"\n{unexpected_keys}"
+            )
+    
     def run(self, **kwargs):
         """Run new inversion or continue from specific states."""
-        # Update shared configuration
+        # Check whetehr self.run_kwargs is valid
+        self.check_run_kwargs()
+        # Update inversion.run parameters
         self.run_kwargs.update(kwargs)
         
-        # Start from new states
-        if self.current_states is None:
-            self.inversion.run(**self.run_kwargs)
-            
-        # Start from current states
-        else:
+        # Re-define inversion instance with self.current_states
+        if self.current_states is not None:
             self.inversion = bb.BayesianInversion(
                 parameterization=self.inversion.parameterization,
                 log_likelihood=self.inversion.log_likelihood,
                 n_chains=len(self.current_states),
                 walkers_starting_states=self.current_states,
             )
-            self.inversion.run(**self.run_kwargs)
-            
-        # Save running keyword arguments
+
+        self.inversion.run(**self.run_kwargs)
+
+        # Save inversion.run parameters
         save_path = get_unique_path(self.save_dir / "run_kwargs.csv")
         run_kwargs_info = pd.Series(self.run_kwargs).to_frame(name="value")
         run_kwargs_info.to_csv(save_path, index=True, index_label="key")
+    
+        # Save the current states of Markov chains.
+        self.save_states()
             
     def save_states(self):
-        """Save states as a attribute and a pickle file."""
+        """Save states by an attribute and a pickle file."""
         # Extract current states of Markov chains
         self.current_states = [chain.current_state for chain in self.inversion.chains]
         
-        # Write current states as pickle files
+        # Write current states as a pickle file
         save_path = get_unique_path(self.save_dir / "states.pkl")
         with open(save_path, "wb") as f:
             pickle.dump(self.current_states, f, protocol=pickle.HIGHEST_PROTOCOL)
     
-    def load_states(self, file_path: Path | str):
+    def load_states(self, file_path: Union[Path, str]):
         """Load states from a pickle file."""
         with open(file_path, "rb") as f:
             self.current_states = pickle.load(f)
-        
-    def process(self, stack_chains: bool, do_plot: bool = True):
+
+    def process(self, concat_chains: bool, do_arviz_plot: bool = False):
         """Post process and get results."""
-        postsamples = organize_results(
-            self.inversion, self.sort_refs, self.save_dir
-        )
+        postsamples = organize_results(self.inversion, self.sort_refs, self.save_dir)
+        
         post_process = PostProcess(postsamples, self.save_dir)
-        post_process.est_dims(do_plot)
-        post_process.by_arviz(stack_chains, do_plot)
+        post_process.est_dims(do_plot=True)
+        post_process.by_arviz(concat_chains, do_arviz_plot)
 

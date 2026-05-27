@@ -1,8 +1,17 @@
 0.0.0
+- First release
 - Checkpoint by states
 - Gaussian mixture models (GMM) estimatation method is not developed.
 
-0.0.1 (TBD)
+0.1.0 (TBD)
+- The minimum Python version is 3.7 but 3.10+ is recommended since Arviz 0.20+ requires Python 3.10+.
+- Change type hint syntax compatible to Python3.6
+- Remove GMM related methods and the deprecated method to_array()
 - Add plt.close() after all plottings
 - Change all np.newaxis to None
-- index=False for to_csv() except for ArviZ summary, normalizing_info, and run_kwargs_info
+- index=False for to_csv() except for ArviZ summary, and run_kwargs_info
+- Rename the parameter "stack_chains" to "concat_chains" which works inversely
+- Autosave states as run
+- Add logic to check validity of InversionHandler.run_kwargs for bayesbay.BaseBayesianInversion.run()
+- Solve label-switching by clustering instead of Hungarian matching (TBD)
+- Concatenate temperatures.csv and acceptances.csv (TBD)
