@@ -143,14 +143,15 @@ def sort_and_match_array(
     
     # Perform Hungarian matching for each indexed array in axis=0
     for i in range(len(array)):
-        # Compute cost with standardized Euclidean metric between i-th sample and reference
+        # Compute cost by standardized Euclidean metric between i-th sample and reference.
+        # cost_matrix[j, k] is the metric between array[i][j], reference[k].
         cost_matrix = cdist(array[i], reference, metric="seuclidean", V=variances)
         
-        # Solve optimal assignment
-        _, col_idxs = linear_sum_assignment(cost_matrix)
+        # Find row_ind and col_ind minimizing cost_matrix[row_ind, col_ind].sum()
+        row_ind, col_ind = linear_sum_assignment(cost_matrix, maximize=False)
 
-        # Record the aligned i-th sample
-        aligned_array[i, col_idxs] = array[i]
+        # Record the aligned i-th sample minimizing sum of metric
+        aligned_array[i, col_ind] = array[i]
     
     return aligned_array
 
@@ -248,7 +249,7 @@ def align_parameters(
                 
                 # Shape: (draws, dimensions, parameters) == (M, K, P)
                 data_array = np.stack(
-                    [np.stack(group[param].values) for param in param_col_names], axis=-1,
+                    [np.stack(group[param].to_numpy()) for param in param_col_names], axis=-1,
                 )
                 
                 aligned_array = sort_and_match_array(data_array, ref_idx)
@@ -299,7 +300,7 @@ def organize_results(
         ratio_dict["kind"] = "ratio"
         
         # Acceptance statistics
-        stats = chain.statistics
+        stats: dict = chain.statistics
         
         # The total numbers of proposed and accepted samples
         proposed_dict["total"] = stats["n_proposed_models_total"]
@@ -450,7 +451,7 @@ class PostProcess:
                 if len(group) == 0:
                     continue
                 param_arrays = {
-                    param: np.stack(group[param].values)[None, ...] 
+                    param: np.stack(group[param].to_numpy())[None, ...] 
                     for param in param_col_names
                 }
                 arviz_dict_by_dims[dims] = param_arrays
@@ -463,12 +464,12 @@ class PostProcess:
                 
                 # Count draws per chain_id
                 counts = group["chain_id"].value_counts().sort_values(ascending=False)
-                unique_ids = counts.index.values
-                draws_counts = counts.values
+                unique_ids = counts.index.to_numpy()
+                draws_counts = counts.to_numpy()
                 
                 # Find the number of chains to keep, which maximize sample volume.
                 # Total sample volume = (number of chains) * (min draws among them).
-                # Since draw_counts is sorted descending, min draw for i-th chains is draw_counts[i-1].
+                # Since draw_counts is sorted descending, min draw for i-th chains is draw_counts[i - 1].
                 candidate_volumes = np.arange(1, len(unique_ids) + 1) * draws_counts
                 
                 # The optimal index maximize sample volume.
@@ -481,18 +482,19 @@ class PostProcess:
                 # Filter and re-sort group to include only best chain ids
                 filtered_group = group[group["chain_id"].isin(best_chain_ids)].sort_values("chain_id")
                 
-                # Trimming draws using descending counter
+                #!!! DEPRECATED: Trimming draws using descending counter
                 # We must re-calculate counts for the filtered/sorted group
-                _, final_counts = np.unique(filtered_group["chain_id"].values, return_counts=True)
-                descending_counter = np.concatenate([np.arange(c)[::-1] for c in final_counts])
-                chain_mask = descending_counter < best_min_draw
+                #_, final_counts = np.unique(filtered_group["chain_id"].to_numpy(), return_counts=True)
+                #descending_counter = np.concatenate([np.arange(c)[::-1] for c in final_counts])
+                #chain_mask = descending_counter < best_min_draw
                 
-                # Build parameter arrays: (chains, draws, params)
+                # Build for each parameter
                 param_arrays = {}
                 for param in param_col_names:
                     # Stack object arrays of shape (draws, params) into 3d array
-                    data = np.stack(filtered_group[param].values[chain_mask])
-                    param_arrays[param] = data.reshape(best_n_chains, best_min_draw, -1)
+                    param_arrays[param] = np.stack(
+                        [draws.to_numpy()[-best_min_draw:] for draws in filtered_group[param].groupby("chain_id")]
+                    )
                 
                 arviz_dict_by_dims[dims] = param_arrays
         
@@ -569,7 +571,7 @@ class InversionHandler:
         self.current_states: Optional[List[List[bb.State]]] = None
         
         # Parameters for inversion.run()
-        self.run_kwargs: Dict[str, Any] = {}
+        self.run_kwargs: Union[Dict[str, Any], dict] = {}
         
         # Posterior samples to be analyzed
         self.postsamples: Optional[pd.DataFrmae] = None
@@ -634,6 +636,7 @@ class InversionHandler:
             concat_samples: bool,
             concat_chains: bool,
             do_arviz_plot: bool = False,
+            save_csv: bool = False,
             use_multiindex: bool = False,
         ) -> None:
         """Post process and get results.
@@ -646,6 +649,8 @@ class InversionHandler:
             Concatenate chains.
         do_arviz_plot : bool, optional
             Do plot ArviZ plots and save them. The default is False.
+        save_csv : bool, optional
+            Save posterior samples as CSV. The default is False.
         use_multiindex : bool, optional
             When saving posterior samples as CSV, use multi-index.
             See more details in expand_array_columns(). The default is False.
@@ -666,14 +671,13 @@ class InversionHandler:
         post_process.est_dims(do_plot=True)
         post_process.by_arviz(concat_chains, do_arviz_plot)
         
-        # Column-wise expansion by decomposing multi-dimension parameter columns
-        expanded_postsamples = expand_array_columns(self.postsamples, use_multiindex)
-        
         # Save posterior samples
-        if self.save_dir:
-            self.postsamples.to_parquet(
-                get_unique_path(Path(self.save_dir) / "postamples.parquet"),
-                engine="pyarrow", compression="zstd"
-            )
+        self.postsamples.to_parquet(
+            get_unique_path(Path(self.save_dir) / "postamples.parquet"),
+            engine="pyarrow", compression="zstd"
+        )
+        if save_csv:
+            # Column-wise expansion by decomposing multi-dimension parameter columns
+            expanded_postsamples = expand_array_columns(self.postsamples, use_multiindex)
             expanded_postsamples.to_csv(get_unique_path(Path(self.save_dir) / "expanded_postamples.csv"), index=False)
 
