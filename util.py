@@ -219,7 +219,7 @@ def align_parameters(
     for cat in ["trans", "fixed"]:
         
         if cat == "trans":
-            space_groups = schema.loc[schema["cat"]=="dim", ["field", "col_name"]].values
+            space_groups = schema.loc[schema["cat"]=="dim", ["field", "col_name"]].to_numpy()
         else:
             fields = np.unique(schema.loc[schema["cat"]=="fixed", "field"])
             space_groups = [(f, None) for f in fields]  # No dim_col (None)
@@ -378,7 +378,7 @@ class PostProcess:
         """
         # Dimension column names like f"{space}.n_dimensions"
         dim_col_names = self.schema.loc[self.schema["cat"]=="dim", "col_name"].tolist()
-        dim_cols = self.postsamples[dim_col_names].values  # Shape: (samples, spaces)
+        dim_cols = self.postsamples[dim_col_names].to_numpy()  # Shape: (samples, spaces)
         
         # Dimensions bins edges for each space
         bins_edges = [np.arange(np.min(col), np.max(col) + 2) - 0.5 for col in dim_cols.T]
