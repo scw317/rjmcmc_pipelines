@@ -3,19 +3,19 @@
 - Checkpoint by states
 - Gaussian mixture models (GMM) estimatation method is not developed.
 
-0.1.0 (TBD)
+0.1.0
 - The minimum Python version is 3.7 but 3.10+ is recommended since Arviz 0.20+ requires Python 3.10+.
-- Change type hint syntax compatible to Python3.6
+- Change type hint syntax compatible to Python 3.6
 - PyArrow is required to save posterior samples as parquet. 
 - Remove GMM related methods and the deprecated method to_array()
 - Add plt.close() after all plottings
 - Change all np.newaxis to None
 - index=False for to_csv() except for ArviZ summary, and run_kwargs_info
-- Rename the parameter "stack_chains" to "concat_chains" which works inversely
-- Autosave states as run
+- Rename the parameter "stack_chains" to "concat_chains" in PostProcess.to_arviz(), which works inversely
+- Autosave states as run()
 - Add logic to check validity of InversionHandler.run_kwargs for bayesbay.BaseBayesianInversion.run()
 - Concatenate temperatures.csv and acceptances.csv
-- Concatenate before and current posterior samples optionally and save them in InversionHandler.process()
+- New logic concatenating before and current posterior samples optionally and save them in InversionHandler.process()
 - Bug fix for Hungarian matching logic in sort_and_match_array()
-- Revise chain draw trimming logic (TBD)
-- All pandas objects return numpy object by to_numpy() not values.
+- Revise chain draw trimming logic
+- When pandas.DataFrame objects return numpy objects, use to_numpy() not values.

@@ -175,8 +175,8 @@ def get_column_schema(postsamples: pd.DataFrame) -> pd.DataFrame:
     0   space1.n_dimensions   space1  n_dimensions     dim     
     1         space0.param0   space0        param0   fixed  
     2         space0.param1   space0        param1   fixed
-    3         space0.param0   space1        param0   trans
-    4         space0.param1   space1        param1   trans
+    3         space1.param0   space1        param0   trans
+    4         space1.param1   space1        param1   trans
     5         target0.dpred  target0         dpred  target
     """
     # Add original column names for reference
@@ -232,7 +232,7 @@ def align_parameters(
     df : pd.DataFrame
         Aligned postsamples.
     """
-    df = postsamples  # Shallow copy
+    df = postsamples
 
     for cat in ["trans", "fixed"]:
         
@@ -382,7 +382,7 @@ class PostProcess:
             self.save_dir.mkdir(parents=True)
         self.get_schema()
     
-    def get_schema(self) -> pd.DataFrame:
+    def get_schema(self):
         self.schema = get_column_schema(self.postsamples)
 
     def est_dims(self, do_plot: bool) -> pd.DataFrame:
@@ -445,6 +445,7 @@ class PostProcess:
         ----------
         concat_chains : bool
             Determine to concatenate chains as a single chain.
+            If True, R-hat, the chains convergency statistic, is not given.
         
         Returns
         -------
@@ -477,42 +478,43 @@ class PostProcess:
                 }
                 arviz_dict_by_dims[dims] = param_arrays
                 
-        # If chains have inhomogeneous draws, triming samples for each chain to be homogeneous.
+        # If chains have inhomogeneous draws, triming draws for each chain to be homogeneous.
         else:
             for dims, group in groups:
                 if len(group) == 0:
                     continue
                 
-                # Count draws per chain_id
+                # Count draws per chains
                 counts = group["chain_id"].value_counts()
                 unique_ids = counts.index.to_numpy()
                 draw_counts = counts.to_numpy()
                 
+                # valid_chain_mask[i, j]: bool = draw_counts[j] >= draw_counts[i]
                 valid_chain_mask = draw_counts >= draw_counts[..., None]
                 # The number of chains of which draws are more than draws_counts
                 valid_chain_counts = np.count_nonzero(valid_chain_mask, axis=1)
                 
                 # Sample volumn is the product between the refernce number of draws
-                # and the number of chains which have draws more than the reference number.
+                # and the number of chains of which draws are more than the reference number.
                 candidate_volumes = valid_chain_counts * draw_counts
                 
-                # The optimal index maximize sample volume.
+                # The optimal index maximizing sample volume.
                 opt_idx = np.argmax(candidate_volumes)
-                    
-                best_n_draws = draw_counts[opt_idx]
-                best_chain_ids = unique_ids[valid_chain_mask[opt_idx]]
+                 
+                opt_n_draws = draw_counts[opt_idx]
+                opt_chain_ids = unique_ids[valid_chain_mask[opt_idx]]
                 
-                # Filter to include only best_chain_ids
-                filtered_group = group[group["chain_id"].isin(best_chain_ids)]
+                # Filter to include only opt_chain_ids
+                filtered_group = group[group["chain_id"].isin(opt_chain_ids)]
                 
                 # Build homogenously trimmed draws for each parameters
                 param_arrays: Dict[str, np.ndarray] = {}
                 for param in param_col_names:
-                    # Stack draws array of shape (best_n_draws, dimensions) for each chain
-                    # into the array of shape (len(best_chain_ids), best_n_draws, dimensions).
+                    # Stack draws array of shape (opt_n_draws, dimensions) for each chain
+                    # into the array of shape (len(opt_chain_ids), opt_n_draws, dimensions).
                     param_arrays[param] = np.stack(
                         [
-                            draws[param].to_numpy()[-best_n_draws:]  # Remain last draws
+                            np.stack(draws[param].tolist())[-opt_n_draws:]  # Remain last draws
                             for _, draws in filtered_group.groupby("chain_id")
                         ]
                     )
@@ -522,7 +524,7 @@ class PostProcess:
     
     def by_arviz(self, concat_chains: bool, do_plot: bool) -> dict:
         """Get estimates and statistics by ArviZ library."""
-        samples_by_dims = self.to_arviz(concat_chains=concat_chains)
+        samples_by_dims = self.to_arviz(concat_chains)
         
         results = {}
         for dims, samples in samples_by_dims.items():
@@ -566,7 +568,7 @@ class InversionHandler:
             inversion: bb.BayesianInversion,
             sort_refs: Optional[Sequence[str]] = None,
             save_dir: Union[Path, str] = "./results",
-        ):
+        ) -> None:
         """
         Parameters
         ----------
@@ -620,12 +622,12 @@ class InversionHandler:
         with open(save_path, "wb") as f:
             pickle.dump(self.current_states, f, protocol=pickle.HIGHEST_PROTOCOL)
     
-    def load_states(self, file_path: Union[Path, str]):
+    def load_states(self, file_path: Union[Path, str]) -> None:
         """Load states from a pickle file."""
         with open(file_path, "rb") as f:
             self.current_states = pickle.load(f)
     
-    def run(self, **kwargs):
+    def run(self, **kwargs) -> None:
         """Run new inversion or continue from specific states."""
         # Check whetehr self.run_kwargs is valid
         self.check_run_kwargs()
@@ -681,12 +683,14 @@ class InversionHandler:
         """
         postsamples = organize_results(self.inversion, self.sort_refs, self.save_dir)
         
+        # Concatenate the current posterior samples with the latter one
         if concat_samples and self.postsamples is not None:
             self.postsamples = pd.concat((self.postsamples, postsamples), ignore_index=True)
+        # Replace the latter posterior samples to the current one
         else:
             self.postsamples = postsamples
         
-        # Processing posterior samples
+        # Process posterior samples
         post_process = PostProcess(postsamples, self.save_dir)
         post_process.est_dims(do_plot=True)
         post_process.by_arviz(concat_chains, do_arviz_plot)
