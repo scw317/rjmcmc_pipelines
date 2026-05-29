@@ -6,6 +6,7 @@
 0.1.0 (TBD)
 - The minimum Python version is 3.7 but 3.10+ is recommended since Arviz 0.20+ requires Python 3.10+.
 - Change type hint syntax compatible to Python3.6
+- PyArrow is required to save posterior samples as parquet. 
 - Remove GMM related methods and the deprecated method to_array()
 - Add plt.close() after all plottings
 - Change all np.newaxis to None

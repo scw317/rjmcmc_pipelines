@@ -14,25 +14,25 @@ from scipy.spatial.distance import cdist
 from scipy.stats import median_abs_deviation
 
 # Signature keyword arguments of bb.BayesianInversion.run()
-BB_RUN_SIGNATURE_KEYS = list(signature(bb.BayesianInversion.run).parameters.keys())
+SIGNATURE_BB_RUN_KEYS = list(signature(bb.BayesianInversion.run).parameters.keys())
 
 
-def get_unique_path(path: Union[Path, str], abort_count: int = 1000) -> Path:
-    """Get a unique path by appending an incrementing number if the file exists.
+def get_unique_path(path: Union[Path, str]) -> Path:
+    """Get a unique path by appending an incrementing number.
     
-    Change f'{parent}/{stem}.{suffix}' to f'{parent}/{stem}_{counter}.{suffix}'.
+    Change the original path f'{parent}/{stem}.{suffix}'
+    to the unique path f'{parent}/{stem}_{counter}.{suffix}'.
     {suffix} is not necessary.
     
     Parameters
     ----------
     path : Path | str
-    abort_count : int, optional
-        Increment abort as reaching this. The default is 1000.
+        Original path.
     
     Retruns
     -------
     new_path : Path
-        New path with incremented or random number.
+        New path with an incrementing number.
     """
     path = Path(path)
     
@@ -44,17 +44,13 @@ def get_unique_path(path: Union[Path, str], abort_count: int = 1000) -> Path:
     stem = path.stem
     suffix = path.suffix
     
-    for counter in range(1, abort_count + 1):
-        # Construct new path with incremented number
+    # Construct new path with incrementing number
+    counter = 1
+    while True:
         new_path = parent / f"{stem}_{counter}{suffix}"
         if not new_path.exists():
             return new_path
-    
-    # Construct new path with random number when counter reach abort_count
-    counter = np.random.randint(abort_count + 1, 100 * abort_count)
-    new_path = parent / f"{stem}_{counter}{suffix}"
-    
-    return new_path
+        counter += 1
 
 
 def expand_array_columns(df: pd.DataFrame, use_multiindex: bool) -> pd.DataFrame:
@@ -67,15 +63,28 @@ def expand_array_columns(df: pd.DataFrame, use_multiindex: bool) -> pd.DataFrame
     use_multiindex : bool
         If True, create multi-index column dataframe.
         Columns are hierarchical tuples. e.g., ('col', 0), ('col', 1). 
-        If False, creates single-index column dataframe.
+        If False, create single-index column dataframe.
         Columns are flat names. e.g., 'col[0]', 'col[1]'.
         
     Returns
     -------
     pd.DataFrame
         Column-wise expanded dataframe by decomposing list-like cells.
+    
+    Examples
+    --------
+    >>> df
+        col_0    col_1
+    0  [1, 2]   [3, 4]
+    >>> expand_array_columns(df, True)
+        col_0    col_1
+        0   1    0   1
+    0   1   2    3   4
+    >>> expand_array_columns(df, False)
+        col_0[0]  col_0[1]  col_1[0]  col_1[1]
+    0          1         2         3         4  
     """
-    new_parts = []
+    new_parts: List[pd.DataFrame] = []
     
     for col in df.columns:
         # Detect if the column contains list-like elements (excluding strings)
@@ -103,13 +112,10 @@ def expand_array_columns(df: pd.DataFrame, use_multiindex: bool) -> pd.DataFrame
     return pd.concat(new_parts, axis=1)
 
 
-def sort_and_match_array(
-        array: np.ndarray,
-        ref_idx: Optional[int] = None,
-        ) -> np.ndarray:
+def sort_and_match_array(array: np.ndarray, ref_idx: Optional[int] = None) -> np.ndarray:
     """Sorting and Hungarian matching.
 
-    The sorting is performed along the axis=-2 refered by one index in axis=-1.
+    Sorting along the axis=-2 refered by an index in axis=-1.
     Hungarian matching based on standardized Euclidean metric.
 
     Parameters
@@ -123,7 +129,7 @@ def sort_and_match_array(
     Returns
     -------
     aligned_array : np.ndarray
-        Sorted and matched.
+        Sorted and matched array.
     """
     # Reference sample for Hungarian matching
     reference = np.median(array, axis=0)
@@ -157,10 +163,21 @@ def sort_and_match_array(
 
 
 def get_column_schema(postsamples: pd.DataFrame) -> pd.DataFrame:
-    """Get column schema of the standard form of BayesBay posterior sample results.
+    """Get column schema of the standard form of BayesBay results.
     
     Recognize which column represents dimension features, targets,
     or parameters of trans or fixed dimensional space, and so on.
+    
+    Examples
+    --------
+    >>> schema
+                   col_name    field          attr     cat
+    0   space1.n_dimensions   space1  n_dimensions     dim     
+    1         space0.param0   space0        param0   fixed  
+    2         space0.param1   space0        param1   fixed
+    3         space0.param0   space1        param0   trans
+    4         space0.param1   space1        param1   trans
+    5         target0.dpred  target0         dpred  target
     """
     # Add original column names for reference
     schema = pd.Series(postsamples.columns, name="col_name", dtype=str)
@@ -266,7 +283,6 @@ def organize_results(
         inversion: bb.BayesianInversion,
         sort_refs: Sequence[str],
         save_dir: Union[Path, str],
-        use_multiindex: bool,
     ) -> pd.DataFrame:
     """Organize sampling results and acceptance statistics.
     
@@ -277,9 +293,6 @@ def organize_results(
         Sorting reference parmaters for each trans-dimensional space.
     save_dir : Path | str
         Save directory path.
-    use_multiindex : bool
-        Determine using mulit-index for expanded_postsamples.
-        See more details in expand_array_columns().
         
     Retruns
     -------
@@ -287,7 +300,7 @@ def organize_results(
         Posterior samples.
         Only unity temperature samples are included.
     """
-    markov_chains = inversion.chains  # bb.MarkovChain instance
+    markov_chains: List[bb.MarkovChain] = inversion.chains
     
     # Get acceptance statistics and posterior samples from markov_chains
     acceptance_list = []
@@ -308,20 +321,22 @@ def organize_results(
         # Total acceptance ratio
         ratio_dict["total"] = stats["n_accepted_models_total"] / stats["n_proposed_models_total"]
         
-        # The numbers of proposed and accepted samples for each space
+        # The numbers of proposed and accepted samples for each parameter space
         for dict_p, dict_a in zip(stats["n_proposed_models"].values(), stats["n_accepted_models"].values()):
             proposed_dict.update(dict_p)
             accepted_dict.update(dict_a)
-            # Acceptance ratios for each space
+            # Acceptance ratios for each parameter space
             for (key, val_p), val_a in zip(dict_p.items(), dict_a.values()):
                 ratio_dict[key] = val_a / val_p
         
         acceptance_df = pd.DataFrame((proposed_dict, accepted_dict, ratio_dict))
         acceptance_list.append(acceptance_df)
         
-        # Posterior samples
-        postsample_dict = inversion.get_results_from_chains(chain)
-        # It is possible that some chains do not have any unity temperature samples.
+        # Posterior samples for a Markovs chain
+        postsample_dict: Dict[str, List[Union[int, np.ndarray]]] = inversion.get_results_from_chains(chain)
+        
+        # It is possible that some chains do not have any unity temperature samples,
+        # therefore, postsample_dict can be empty dict.
         if postsample_dict:
             postsample_df = pd.DataFrame(postsample_dict)
             
@@ -397,11 +412,17 @@ class PostProcess:
         for d, dim in enumerate(dim_cols.T):
             uniques, counts = np.unique(dim, return_counts=True)
             
-            # Dimensions histogram
+            # The highest posterior probability dimensions
+            dim_mode = uniques[np.argmax(counts)]
+            
+            # Dimensions posterior distribution plot
             if do_plot:
                 fig, ax = plt.subplots()
-                ax.hist(dim, bins=bins_edges[d])
+                ax.hist(dim, bins=bins_edges[d], color="C0", histtype="step")
+                ax.axvline(dim_mode, color="red")
+                ax.annotate(dim_mode, (dim_mode, 0))
                 ax.set_xlabel(dim_col_names[d])
+                ax.set_ylabel("The number of posterior samples")
                 fig.savefig(get_unique_path(self.save_dir / f"{dim_col_names[d]}.png"))
                 plt.close()
             
@@ -463,39 +484,38 @@ class PostProcess:
                     continue
                 
                 # Count draws per chain_id
-                counts = group["chain_id"].value_counts().sort_values(ascending=False)
+                counts = group["chain_id"].value_counts()
                 unique_ids = counts.index.to_numpy()
-                draws_counts = counts.to_numpy()
+                draw_counts = counts.to_numpy()
                 
-                # Find the number of chains to keep, which maximize sample volume.
-                # Total sample volume = (number of chains) * (min draws among them).
-                # Since draw_counts is sorted descending, min draw for i-th chains is draw_counts[i - 1].
-                candidate_volumes = np.arange(1, len(unique_ids) + 1) * draws_counts
+                valid_chain_mask = draw_counts >= draw_counts[..., None]
+                # The number of chains of which draws are more than draws_counts
+                valid_chain_counts = np.count_nonzero(valid_chain_mask, axis=1)
+                
+                # Sample volumn is the product between the refernce number of draws
+                # and the number of chains which have draws more than the reference number.
+                candidate_volumes = valid_chain_counts * draw_counts
                 
                 # The optimal index maximize sample volume.
                 opt_idx = np.argmax(candidate_volumes)
                     
-                best_n_chains = opt_idx + 1
-                best_min_draw = draws_counts[opt_idx]
-                best_chain_ids = unique_ids[:best_n_chains]
+                best_n_draws = draw_counts[opt_idx]
+                best_chain_ids = unique_ids[valid_chain_mask[opt_idx]]
                 
-                # Filter and re-sort group to include only best chain ids
-                filtered_group = group[group["chain_id"].isin(best_chain_ids)].sort_values("chain_id")
+                # Filter to include only best_chain_ids
+                filtered_group = group[group["chain_id"].isin(best_chain_ids)]
                 
-                #!!! DEPRECATED: Trimming draws using descending counter
-                # We must re-calculate counts for the filtered/sorted group
-                #_, final_counts = np.unique(filtered_group["chain_id"].to_numpy(), return_counts=True)
-                #descending_counter = np.concatenate([np.arange(c)[::-1] for c in final_counts])
-                #chain_mask = descending_counter < best_min_draw
-                
-                # Build for each parameter
-                param_arrays = {}
+                # Build homogenously trimmed draws for each parameters
+                param_arrays: Dict[str, np.ndarray] = {}
                 for param in param_col_names:
-                    # Stack object arrays of shape (draws, params) into 3d array
+                    # Stack draws array of shape (best_n_draws, dimensions) for each chain
+                    # into the array of shape (len(best_chain_ids), best_n_draws, dimensions).
                     param_arrays[param] = np.stack(
-                        [draws.to_numpy()[-best_min_draw:] for draws in filtered_group[param].groupby("chain_id")]
+                        [
+                            draws[param].to_numpy()[-best_n_draws:]  # Remain last draws
+                            for _, draws in filtered_group.groupby("chain_id")
+                        ]
                     )
-                
                 arviz_dict_by_dims[dims] = param_arrays
         
         return arviz_dict_by_dims
@@ -567,21 +587,21 @@ class InversionHandler:
         if not self.save_dir.exists():
             self.save_dir.mkdir(parents=True)
         
+        # Parameters for inversion.run()
+        self.run_kwargs: Dict[str, Any] = {}
+        
         # States as checkpoint to run
         self.current_states: Optional[List[List[bb.State]]] = None
         
-        # Parameters for inversion.run()
-        self.run_kwargs: Union[Dict[str, Any], dict] = {}
-        
         # Posterior samples to be analyzed
-        self.postsamples: Optional[pd.DataFrmae] = None
+        self.postsamples: Optional[pd.DataFrame] = None
     
     def check_run_kwargs(self):
         """Check whether unexpected keyword arguments exist in self.run_kwargs."""
         # Find unexpected keys in self.run_kwargs
         unexpected_keys = []
         for key in self.run_kwargs.keys():
-            if key not in BB_RUN_SIGNATURE_KEYS:
+            if key not in SIGNATURE_BB_RUN_KEYS:
                 unexpected_keys.append(key)
         # Raise and report a error        
         if unexpected_keys:
@@ -648,7 +668,7 @@ class InversionHandler:
         concat_chains : bool
             Concatenate chains.
         do_arviz_plot : bool, optional
-            Do plot ArviZ plots and save them. The default is False.
+            Plot ArviZ plots and save them. The default is False.
         save_csv : bool, optional
             Save posterior samples as CSV. The default is False.
         use_multiindex : bool, optional
@@ -659,7 +679,7 @@ class InversionHandler:
         -------
         None
         """
-        postsamples = organize_results(self.inversion, self.sort_refs, self.save_dir, use_multiindex)
+        postsamples = organize_results(self.inversion, self.sort_refs, self.save_dir)
         
         if concat_samples and self.postsamples is not None:
             self.postsamples = pd.concat((self.postsamples, postsamples), ignore_index=True)
@@ -679,5 +699,7 @@ class InversionHandler:
         if save_csv:
             # Column-wise expansion by decomposing multi-dimension parameter columns
             expanded_postsamples = expand_array_columns(self.postsamples, use_multiindex)
-            expanded_postsamples.to_csv(get_unique_path(Path(self.save_dir) / "expanded_postamples.csv"), index=False)
+            expanded_postsamples.to_csv(
+                get_unique_path(Path(self.save_dir) / "expanded_postamples.csv"), index=False
+            )
 
