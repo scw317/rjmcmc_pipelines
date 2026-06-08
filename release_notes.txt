@@ -19,3 +19,10 @@
 - Bug fix for Hungarian matching logic in sort_and_match_array()
 - Revise chain draw trimming logic
 - When pandas.DataFrame objects return numpy objects, use to_numpy() not values.
+
+0.1.1 (TBD)
+- Required Python version: 3.10+
+- Bugfix: The concatenated postrior samples are saved successfully but only the latest had been proccessed.
+- Change type hint syntax compatible to Python 3.10+
+- Get unique path using datetime instead of increasing number
+- Save results to separated directories by dimensions
