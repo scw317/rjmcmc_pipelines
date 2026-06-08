@@ -20,9 +20,10 @@
 - Revise chain draw trimming logic
 - When pandas.DataFrame objects return numpy objects, use to_numpy() not values.
 
-0.1.1 (TBD)
+0.1.1
 - Required Python version: 3.10+
 - Bugfix: The concatenated postrior samples are saved successfully but only the latest had been proccessed.
+- Bugfix: Wrong line in sort_and_match_array(): aligned_array[i, col_ind] = array[i] -> aligned_array[i] = array[i, col_ind]
 - Change type hint syntax compatible to Python 3.10+
 - Get unique path using datetime instead of increasing number
 - Save results to separated directories by dimensions

@@ -87,7 +87,8 @@ def sort_and_match_array(array: np.ndarray, ref_idx: int | None = None) -> np.nd
     Parameters
     ----------
     array : np.ndarray
-        Shape: (N, K, P).
+        array.shape == (N, K, P).
+        Sort and match indices in axis=1 among different indices in axis=0.
     ref_idx : int | None, optional
         The sorting reference index of axis=-1 for array. 
         If None, no sorting. The default is None.
@@ -122,7 +123,7 @@ def sort_and_match_array(array: np.ndarray, ref_idx: int | None = None) -> np.nd
         row_ind, col_ind = linear_sum_assignment(cost_matrix, maximize=False)
 
         # Record the aligned i-th sample minimizing sum of metric
-        aligned_array[i, col_ind] = array[i]
+        aligned_array[i] = array[i, col_ind]
     
     return aligned_array
 
@@ -229,7 +230,7 @@ def align_parameters(
                 if len(group) == 0:
                     continue
                 
-                # Shape: (draws, dimensions, parameters) == (M, K, P)
+                # data_array.shape == (draws, dimensions, parameters)
                 data_array = np.stack(
                     [np.stack(group[param].to_numpy()) for param in param_col_names], axis=-1,
                 )
@@ -419,9 +420,9 @@ class PostProcess:
         --------
         >>> arviz_dict_by_dims
         {
-            (1, 5): {
-                param0: [101, 201, 893, ...],
-                param1: [0.2, 3.4, 1.5, ...],
+            (2, 5): {
+                param0: [[[101, 201, 893, ...],
+                param1: [[[0.2, 3.4, 1.5, ...],
                 ...
             },
             ...
@@ -441,7 +442,7 @@ class PostProcess:
         
         arviz_dict_by_dims = {}
         
-        # Treat all samples as one long chain (1, samples, params)
+        # Treat all samples as one long chain (1, samples, dimensions)
         if concat_chains:
             for dims, group in groups:
                 if len(group) == 0:
@@ -482,7 +483,7 @@ class PostProcess:
                 filtered_group = group[group["chain_id"].isin(opt_chain_ids)]
                 
                 # Build homogenously trimmed draws for each parameters
-                param_arrays: dict[str, np.ndarray] = {}
+                param_arrays = {}
                 for param in param_col_names:
                     # Stack draws array of shape (opt_n_draws, dimensions) for each chain
                     # into the array of shape (len(opt_chain_ids), opt_n_draws, dimensions).
@@ -528,13 +529,12 @@ class PostProcess:
             
             # Save distribution, trace, auto-correlation, and convergency plots
             if do_plot:
-                for param in list(idata.posterior.data_vars):
-                    az.plot_dist(idata, var_names=param).savefig(dims_dir / f"dist_{param}.png", bbox_inches="tight")
-                    az.plot_trace(idata, var_names=param).savefig(dims_dir / f"trace_{param}.png", bbox_inches="tight")
-                    az.plot_autocorr(idata, var_names=param).savefig(dims_dir / f"autocorr_{param}.png", bbox_inches="tight")
-                    az.plot_convergence_dist(
-                        idata, var_names=param, diagnostics=["rhat", "ess_tail"]
-                    ).savefig(dims_dir / f"convergency_{param}.png", bbox_inches="tight")
+                param_names = list(idata.posterior.data_vars)
+                for name in param_names:
+                    az.plot_dist(idata, var_names=name).savefig(dims_dir / f"dist_{name}.png", bbox_inches="tight")
+                    az.plot_trace(idata, var_names=name).savefig(dims_dir / f"trace_{name}.png", bbox_inches="tight")
+                    az.plot_autocorr(idata, var_names=name).savefig(dims_dir / f"autocorr_{name}.png", bbox_inches="tight")
+                az.plot_convergence_dist(idata, var_names=param_names).savefig(dims_dir / "convergency.png", bbox_inches="tight")
                 plt.close()
 
 
@@ -567,16 +567,16 @@ class InversionHandler:
         if not self.save_dir.exists():
             self.save_dir.mkdir(parents=True)
         
-        # Parameters for inversion.run()
+        # Keyword arguments for inversion.run()
         self.run_kwargs: dict[str, Any] = {}
         
         # States as checkpoint to run
         self.states: list[list[bb.State]] | None = None
         
-        # Posterior samples to be analyzed
+        # Posterior samples to be processed
         self.postsamples: pd.DataFrame | None = None
     
-    def check_run_kwargs(self):
+    def check_run_kwargs(self) -> None:
         """Check whether unexpected keyword arguments exist in self.run_kwargs."""
         # Find unexpected keys in self.run_kwargs
         unexpected_keys = []
@@ -591,7 +591,7 @@ class InversionHandler:
                 f"\n{unexpected_keys}"
             )
 
-    def save_states(self):
+    def save_states(self, save_path: Path | str) -> None:
         """Save parameter states as an attribute and Pickle."""
         # Extract current states from Markov chains
         self.states = [chain.current_state for chain in self.inversion.chains]
@@ -600,16 +600,16 @@ class InversionHandler:
         with open(self.sub_dir / "states.pkl", "wb") as f:
             pickle.dump(self.states, f, protocol=pickle.HIGHEST_PROTOCOL)
     
-    def load_states(self, file_path: Path | str) -> None:
+    def load_states(self, load_path: Path | str) -> None:
         """Load parameter states from Pickle."""
-        with open(file_path, "rb") as f:
+        with open(load_path, "rb") as f:
             self.states = pickle.load(f)
     
     def run(self, **kwargs) -> None:
         """Run new inversion or continue from self.states."""
         # Check whetehr self.run_kwargs is valid
         self.check_run_kwargs()
-        # Update inversion.run() parameters
+        # Update inversion.run() keyward arguments
         self.run_kwargs.update(kwargs)
         
         # Re-define self.inversion with self.states
@@ -627,7 +627,7 @@ class InversionHandler:
         self.sub_dir = self.save_dir / Path(datetime.now().strftime("%Y%m%d_%H%M%S"))
         self.sub_dir.mkdir(parents=True, exist_ok=True)
         
-        # Save inversion.run() parameters as CSV
+        # Save inversion.run() keyward arguments as CSV
         with open(self.sub_dir / "run_kwargs.csv", mode="w", newline="") as file:
             writer = csv.writer(file)
             writer.writerow(["key", "value"])
@@ -635,7 +635,7 @@ class InversionHandler:
                 writer.writerow([key, val])
     
         # Save the current states of Markov chains.
-        self.save_states()
+        self.save_states(self.sub_dir / "states.pkl")
     
     def process(
             self,
