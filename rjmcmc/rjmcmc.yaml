@@ -1,4 +1,4 @@
-name: rjmcmc-env
+name: rjmcmc
 channels:
   - conda-forge
   - defaults

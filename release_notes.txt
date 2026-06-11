@@ -30,3 +30,8 @@
 
 0.1.2
 - Move util.py to analysis.py
+
+0.2.0 (TBD)
+- Add a flare decomposition pipeline
+- Revise directory structure
+- Divide the module analysis.py to ... (TBD)
