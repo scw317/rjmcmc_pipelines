@@ -27,3 +27,6 @@
 - Change type hint syntax compatible to Python 3.10+
 - Get unique path using datetime instead of increasing number
 - Save results to separated directories by dimensions
+
+0.1.2
+- Move util.py to analysis.py
