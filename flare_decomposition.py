@@ -1,4 +1,5 @@
 import csv
+from pathlib import Path
 
 import bayesbay as bb
 import numpy as np
@@ -10,15 +11,16 @@ from rjmcmc.handle import InversionHandler
 # %% Preset: Data
 # ++++++++++++++++++++++++++++++++
 
-data_path = "flux_data.csv"
-data = np.loadtxt(data_path)
+data_path = Path("flux_data.csv")
+data = np.loadtxt(data_path, delimiter=',')
 
 times = data[..., 0]
 fluxes = data[..., 1]
 errors = data[..., 2]
 
 # Directory path to save results
-save_dir = "./results"
+save_dir = Path("./results")
+save_dir.mkdir(parents=True, exist_ok=True)
 
 # ================================
 # %% Normalize data
@@ -68,8 +70,8 @@ run_kwargs = {
     "save_every": 1000,
     "verbose": True,
     "print_every": 100000,
-    #"sampler": bb.samplers.ParallelTempering(temperature_max=5.0, swap_every=10000),
-    "sampler": bb.samplers.SimulatedAnnealing(temperature_start=10.0),
+    "sampler": bb.samplers.ParallelTempering(temperature_max=5.0, swap_every=10000),
+    #"sampler": bb.samplers.SimulatedAnnealing(temperature_start=10.0),
     #"sampler": bb.samplers.VanillaSampler()
 }
 
@@ -90,15 +92,15 @@ sort_refs = ["flare.t0"]
 
 # Limits of Trans-diemnsional parameters
 trans_limits = [
-    [-0.75, 0.75],
+    [-1, 1],
     [3.0 * errors_n.min(), fluxes_n.max()],
-    [0.001, 0.5],
+    [np.min(np.diff(times_n)) / (2 * np.pi), 1 / (2 *np.pi)],
     [0.1, 5.0],
 ]
 
 # Limits of fixed-diemnsional parameters
 fixed_limits = [
-    [0, fluxes.min()],
+    [0, fluxes_n.min()],
 ]
 
 # Standard deviations of perturbation distributions
@@ -124,21 +126,22 @@ for name, lim, std in zip(fixed_param_names, fixed_limits, fixed_perturb_stds):
     fixed_priors.append(prior)
 
 # ================================
-# %% Modeling
+# %% Model
 # ++++++++++++++++++++++++++++++++
 
 @njit
 def forward_func(t, t0, f0, tau, s, fqs, etol=64, atol=1e-10):
-    # Forward model value memory covered with quiescent flux density
+    # Model value memory covered with quiescent flux density
     f = np.full(len(t), fqs)
 
-    # Sum over component model values
+    # Sum over flare components
     for i in range(len(t0)):
-        # Caching component model parameters
+        # Caching flare model parameters
         _t0  = t0[i]          
         _f0  = f0[i]
         _tau = tau[i]
         _s   = s[i]
+        # Single flare model
         for j in range(len(t)):
             x = (t[j] - _t0) / _tau
             if x < -etol:
@@ -158,6 +161,7 @@ log_factor = -0.5 * np.sum(np.log(2.0 * np.pi * errors_n**2))
 
 @njit
 def log_likelihood_func(t, t0, f0, tau, s, fqs, fluxes, errors, log_factor):
+    """Log multivariate independent Gaussian likelihood."""
     f = forward_func(t, t0, f0, tau, s, fqs)
     log_exp = 0.0
     for i in range(len(f)):
@@ -180,7 +184,7 @@ def log_like_func(state: bb.State):
 log_likelihood = bb.likelihood.LogLikelihood(log_like_func=log_like_func)
 
 # ================================
-# %% Bayesbay instances
+# %% Full parameter space
 # ++++++++++++++++++++++++++++++++
 
 trans_space = bb.parameterization.ParameterSpace(
@@ -200,17 +204,15 @@ fixed_space = bb.parameterization.ParameterSpace(
 parameterization = bb.parameterization.Parameterization([trans_space, fixed_space])
 parameterization.initialize()
 
+# ================================
+# %% Run sampling
+# ++++++++++++++++++++++++++++++++
+
 inversion = bb.BayesianInversion(
     parameterization=parameterization,
     log_likelihood=log_likelihood,
     n_chains=n_chains,
 )
-
-# ================================
-# %% Run sampling
-# ++++++++++++++++++++++++++++++++
-
-save_dir.mkdir(parents=True, exist_ok=True)
 
 handler = InversionHandler(inversion, sort_refs, save_dir)
 handler.run(**run_kwargs)

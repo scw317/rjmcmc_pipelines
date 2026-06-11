@@ -5,7 +5,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
-from util import get_column_schema
+from rjmcmc.util import get_column_schema
 
 
 class PostProcess:
@@ -26,8 +26,7 @@ class PostProcess:
         """
         self.postsamples = postsamples
         self.save_dir = Path(save_dir)
-        if not self.save_dir.exists():
-            self.save_dir.mkdir(parents=True)
+        self.save_dir.mkdir(parents=True, exist_ok=True)
         self.schema = get_column_schema(self.postsamples)
     
     def est_dims(self, do_plot: bool) -> pd.DataFrame:

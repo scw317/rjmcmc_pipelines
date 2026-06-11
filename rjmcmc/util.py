@@ -79,7 +79,7 @@ def sort_and_match_array(array: np.ndarray, ref_idx: int | None = None) -> np.nd
     Parameters
     ----------
     array : np.ndarray
-        array.shape == (N, K, P).
+        array.shape == (N, K, P). N: samples, K: dimensions, P: parameters.
         Sort and match indices in axis=1 among different indices in axis=0.
     ref_idx : int | None, optional
         The sorting reference index of axis=-1 for array. 
@@ -90,13 +90,16 @@ def sort_and_match_array(array: np.ndarray, ref_idx: int | None = None) -> np.nd
     aligned_array : np.ndarray
         Sorted and matched array.
     """
-    # Reference sample for Hungarian matching
-    reference = np.median(array, axis=0)
-    
-    # Sort the reference samples by ref_idx
+    array = array.copy()
+
+    # Pre-sorting each sample by ref_idx before computing reference sample
+    # This prevents reference collapse under symmetric label switching.
     if ref_idx is not None:
-        sort_idxs = np.argsort(reference[..., ref_idx])
-        reference = reference[sort_idxs]
+        sort_idxs = np.argsort(array[..., ref_idx], axis=1)
+        array = np.take_along_axis(array, sort_idxs[..., None], axis=1)
+
+    # Reference sample for Hungarian matching
+    sample_ref = np.median(array, axis=0)
     
     # Calculate the effective variance for each index in axis=2. Shape: (P,).
     # This is robuster than standard deviation to outliner.
@@ -109,13 +112,13 @@ def sort_and_match_array(array: np.ndarray, ref_idx: int | None = None) -> np.nd
     for i in range(len(array)):
         # Compute cost by standardized Euclidean metric between i-th sample and reference.
         # cost_matrix[j, k] is the metric between array[i][j], reference[k].
-        cost_matrix = cdist(array[i], reference, metric="seuclidean", V=variances)
+        cost_matrix = cdist(array[i], sample_ref, metric="seuclidean", V=variances)
         
         # Find row_ind and col_ind minimizing cost_matrix[row_ind, col_ind].sum()
         row_ind, col_ind = linear_sum_assignment(cost_matrix, maximize=False)
 
         # Record the aligned i-th sample minimizing sum of metric
-        aligned_array[i] = array[i, col_ind]
+        aligned_array[i, col_ind] = array[i]
     
     return aligned_array
 
@@ -190,7 +193,7 @@ def align_parameters(
     df : pd.DataFrame
         Aligned postsamples.
     """
-    df = postsamples
+    df = postsamples.copy()
 
     for cat in ["trans", "fixed"]:
         

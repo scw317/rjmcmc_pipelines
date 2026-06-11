@@ -32,6 +32,8 @@
 - Move util.py to analysis.py
 
 0.2.0 (TBD)
-- Add a flare decomposition pipeline
-- Revise directory structure
-- Divide the module analysis.py to ... (TBD)
+- Divide analysis.py to handle.py, process.py, and util.py into ./rjmcmc/
+- Bugfix in rjmcmc.util.sort_and_mach_array(): All samples should be pre-sorted. Change the line "aligned_array[i] = array[i, col_ind]" to "aligned_array[i, col_ind] = array[i]".
+- Separate saving posterior samples logic from rjmcmc.InversionHandler.process() to another method and add loading logic
+- Add a flare decomposition script and example data (flux_data.csv)
+- Add pyproject.toml for ./rjmcmc/ (TBD)
